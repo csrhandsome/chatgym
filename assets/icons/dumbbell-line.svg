@@ -1,0 +1,23 @@
+<svg
+  width="256"
+  height="256"
+  viewBox="0 0 256 256"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <g
+    transform="rotate(-16 128 128)"
+    stroke="#111827"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M56 96V160" />
+    <path d="M78 78V178" />
+    <path d="M100 106V150" />
+    <path d="M100 128H156" />
+    <path d="M156 106V150" />
+    <path d="M178 78V178" />
+    <path d="M200 96V160" />
+  </g>
+</svg>

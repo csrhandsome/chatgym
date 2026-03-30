@@ -1,33 +1,45 @@
 import { Tabs } from 'expo-router';
-import React from 'react';
 
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import CustomBottomTab from '@/components/CustomBottomTab';
+import { sketchTheme } from '@/constants/theme';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
-
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
+        animation: 'none',
         headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
+        sceneStyle: { backgroundColor: sketchTheme.colors.paper },
+      }}
+      tabBar={(props) => <CustomBottomTab {...props} />}>
       <Tabs.Screen
-        name="index"
+        name="camera"
         options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="house.fill" color={color} />,
+          title: '拍照',
         }}
       />
       <Tabs.Screen
-        name="explore"
+        name="chat"
         options={{
-          title: 'Explore',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="paperplane.fill" color={color} />,
+          title: '聊天',
+        }}
+      />
+      <Tabs.Screen
+        name="fitness"
+        options={{
+          title: '训练',
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: '我的',
+        }}
+      />
+      <Tabs.Screen
+        name="workout"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

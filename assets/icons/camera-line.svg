@@ -1,0 +1,18 @@
+<svg
+  width="256"
+  height="256"
+  viewBox="0 0 256 256"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <g
+    stroke="#111827"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M72 70H99L113 52H143L157 70H184C200.569 70 214 83.4315 214 100V166C214 182.569 200.569 196 184 196H72C55.4315 196 42 182.569 42 166V100C42 83.4315 55.4315 70 72 70Z" />
+    <circle cx="128" cy="133" r="36" />
+    <path d="M172 98H188" />
+  </g>
+</svg>

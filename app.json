@@ -13,7 +13,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#EFE4D6",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -27,6 +27,14 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "允许 $(PRODUCT_NAME) 访问相机，用于拍照记录训练动作",
+          "microphonePermission": "允许 $(PRODUCT_NAME) 在录制训练视频时访问麦克风",
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-splash-screen",
         {

@@ -1,0 +1,43 @@
+# Exercise Cartoon Assets
+
+统一风格的健身动作卡通 UI 素材，透明底 PNG + SVG 源文件。
+
+- 卧推
+  - assets/exercises-cartoon/bench-press-cartoon.svg
+  - assets/exercises-cartoon/bench-press-cartoon.png
+- 哑铃弯举
+  - assets/exercises-cartoon/dumbbell-curl-cartoon.svg
+  - assets/exercises-cartoon/dumbbell-curl-cartoon.png
+- 杠铃深蹲
+  - assets/exercises-cartoon/barbell-squat-cartoon.svg
+  - assets/exercises-cartoon/barbell-squat-cartoon.png
+- T杆划船
+  - assets/exercises-cartoon/tbar-row-cartoon.svg
+  - assets/exercises-cartoon/tbar-row-cartoon.png
+- 臀桥
+  - assets/exercises-cartoon/hip-bridge-cartoon.svg
+  - assets/exercises-cartoon/hip-bridge-cartoon.png
+- 引体向上
+  - assets/exercises-cartoon/pull-up-cartoon.svg
+  - assets/exercises-cartoon/pull-up-cartoon.png
+- 高位下拉
+  - assets/exercises-cartoon/lat-pulldown-cartoon.svg
+  - assets/exercises-cartoon/lat-pulldown-cartoon.png
+- 哑铃划船
+  - assets/exercises-cartoon/dumbbell-row-cartoon.svg
+  - assets/exercises-cartoon/dumbbell-row-cartoon.png
+- 坐姿划船
+  - assets/exercises-cartoon/seated-row-cartoon.svg
+  - assets/exercises-cartoon/seated-row-cartoon.png
+- 蝴蝶飞鸟
+  - assets/exercises-cartoon/pec-deck-fly-cartoon.svg
+  - assets/exercises-cartoon/pec-deck-fly-cartoon.png
+- 龙门架夹胸
+  - assets/exercises-cartoon/cable-chest-fly-cartoon.svg
+  - assets/exercises-cartoon/cable-chest-fly-cartoon.png
+- 跑步机
+  - assets/exercises-cartoon/treadmill-cartoon.svg
+  - assets/exercises-cartoon/treadmill-cartoon.png
+- 爬楼机
+  - assets/exercises-cartoon/stair-climber-cartoon.svg
+  - assets/exercises-cartoon/stair-climber-cartoon.png

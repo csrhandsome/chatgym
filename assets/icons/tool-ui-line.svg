@@ -1,0 +1,27 @@
+<svg
+  width="256"
+  height="256"
+  viewBox="0 0 256 256"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <g
+    stroke="#111827"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <rect x="32" y="40" width="192" height="172" rx="24" />
+    <path d="M56 78H116" />
+    <rect x="168" y="64" width="24" height="24" rx="6" />
+    <path d="M180 88V102" />
+    <rect x="54" y="98" width="148" height="78" rx="16" />
+    <path d="M78 126L94 137L78 148" />
+    <path d="M108 148H130" />
+    <path d="M120 124H170" />
+    <path d="M120 136H178" />
+    <path d="M120 148H160" />
+    <path d="M72 190H122" />
+    <path d="M142 190H184" />
+  </g>
+</svg>

@@ -1,0 +1,21 @@
+<svg
+  width="432"
+  height="432"
+  viewBox="0 0 432 432"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <path
+    d="M132 96H292C336.183 96 372 131.817 372 176V228C372 272.183 336.183 308 292 308H227L176 359V308H132C87.8172 308 52 272.183 52 228V176C52 131.817 87.8172 96 132 96Z"
+    fill="#111111"
+  />
+  <rect x="132" y="204" width="168" height="18" rx="9" fill="white" />
+  <rect x="101" y="173" width="18" height="80" rx="9" fill="white" />
+  <rect x="125" y="186" width="14" height="54" rx="7" fill="white" />
+  <rect x="300" y="186" width="14" height="54" rx="7" fill="white" />
+  <rect x="320" y="173" width="18" height="80" rx="9" fill="white" />
+  <path
+    d="M308 66L320 95L349 107L320 119L308 148L296 119L267 107L296 95L308 66Z"
+    fill="#111111"
+  />
+</svg>
