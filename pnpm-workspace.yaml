@@ -1,1 +1,4 @@
 nodeLinker: hoisted
+patchedDependencies:
+  react-native-gifted-chat@3.3.2: patches/react-native-gifted-chat@3.3.2.patch
+  react-native-zoom-reanimated@1.5.3: patches/react-native-zoom-reanimated@1.5.3.patch

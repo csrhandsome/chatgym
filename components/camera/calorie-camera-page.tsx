@@ -1,6 +1,7 @@
 import { Image } from 'expo-image';
-import { CameraView } from 'expo-camera';
-import { useState } from 'react';
+import { CameraView, type CameraCapturedPicture } from 'expo-camera';
+import { useRouter } from 'expo-router';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -14,12 +15,18 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { sketchTheme } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import { useCamera } from '@/hooks/use-camera';
+import { BackendApiError } from '@/services/backend-api';
 import { analyzeMealPhoto, type CalorieAnalysisResult } from '@/services/calorie-api';
 
 type AnalysisState = 'idle' | 'analyzing' | 'success' | 'error';
+type CameraSession = { token: string | null; userId: string | null; generation: number };
+type CameraOperation = CameraSession & { token: string; controller: AbortController };
 
-export function CalorieCameraPage() {
+export function CalorieCameraPage({ active = true, signal }: { active?: boolean; signal?: AbortSignal } = {}) {
+  const router = useRouter();
+  const { isAuthenticated, isHydrating, token, userId, signOut } = useAuth();
   const {
     hasPermission,
     canAskPermissionAgain,
@@ -28,7 +35,7 @@ export function CalorieCameraPage() {
     facing,
     isCameraReady,
     isCapturing,
-    lastPhoto,
+    lastPhoto: capturedPhoto,
     errorMessage,
     requestPermission,
     toggleFacing,
@@ -37,55 +44,159 @@ export function CalorieCameraPage() {
     clearPhoto,
     takePhoto,
   } = useCamera();
-  const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
-  const [analysisResult, setAnalysisResult] = useState<CalorieAnalysisResult | null>(null);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [storedAnalysisState, setAnalysisState] = useState<AnalysisState>('idle');
+  const [storedAnalysisResult, setAnalysisResult] = useState<CalorieAnalysisResult | null>(null);
+  const [storedAnalysisError, setAnalysisError] = useState<string | null>(null);
+  const sessionRef = useRef<CameraSession>({ token, userId: userId ?? null, generation: 0 });
+  const operationRef = useRef<CameraOperation | null>(null);
+  const photoOwnerRef = useRef<CameraOperation | null>(null);
+  const activeRef = useRef(active);
+  const mountFailedRef = useRef(false);
 
-  const handleCapture = async () => {
-    const picture = await takePhoto();
-
-    if (!picture) {
-      return;
+  // Update the guard during render so an old response is rejected even before effects run.
+  const sessionChanged = sessionRef.current.token !== token || sessionRef.current.userId !== (userId ?? null);
+  const activeChanged = activeRef.current !== active;
+  activeRef.current = active;
+  if (sessionChanged || activeChanged) {
+    operationRef.current?.controller.abort();
+    if (sessionChanged) {
+      sessionRef.current = { token, userId: userId ?? null, generation: sessionRef.current.generation + 1 };
     }
+    operationRef.current = null;
+    if (storedAnalysisState === 'analyzing') {
+      setAnalysisState('error');
+      setAnalysisResult(null);
+      setAnalysisError(sessionChanged
+        ? '登录状态已改变，照片已保留，请登录后重新上传。'
+        : '识别已暂停，照片已保留，返回后可以重新上传。');
+    }
+    if (activeChanged) { mountFailedRef.current = false; setCameraError(null); }
+  }
+  const ownerChanged = Boolean(userId && photoOwnerRef.current && photoOwnerRef.current.userId !== userId);
+  if (ownerChanged) {
+    // These states belong to this component, including the useCamera hook's photo state.
+    photoOwnerRef.current = null;
+    clearPhoto();
+    setAnalysisState('idle');
+    setAnalysisResult(null);
+    setAnalysisError(null);
+  }
+  const lastPhoto = ownerChanged ? null : capturedPhoto;
+  const analysisState = ownerChanged ? 'idle' : storedAnalysisState;
+  const analysisResult = ownerChanged ? null : storedAnalysisResult;
+  const analysisError = ownerChanged ? null : storedAnalysisError;
+  const renderedSession = sessionRef.current;
+  const canAnalyze = isAuthenticated && Boolean(token) && !isHydrating;
+
+  const isCurrent = (operation: CameraOperation) =>
+    activeRef.current && !signal?.aborted && !operation.controller.signal.aborted &&
+    operationRef.current === operation && sessionRef.current.generation === operation.generation &&
+    sessionRef.current.token === operation.token && sessionRef.current.userId === operation.userId;
+
+  const analyzePhoto = async (picture: CameraCapturedPicture, operation: CameraOperation) => {
+    if (!isCurrent(operation)) return;
 
     setAnalysisState('analyzing');
     setAnalysisResult(null);
     setAnalysisError(null);
 
     try {
-      const result = await analyzeMealPhoto(picture);
+      const result = await analyzeMealPhoto(picture, {
+        token: operation.token, isCurrent: () => isCurrent(operation), signal: operation.controller.signal,
+      });
+      if (!isCurrent(operation)) return;
       setAnalysisResult(result);
       setAnalysisState('success');
     } catch (error) {
-      const message = error instanceof Error ? error.message : '热量识别失败，请稍后再试。';
+      if (!isCurrent(operation)) return;
+      let message = error instanceof Error ? error.message : '热量识别失败，请稍后再试。';
+
+      if (error instanceof BackendApiError && error.status >= 500) {
+        message = '识别服务暂时不可用，请稍后重新上传，照片已保留。';
+      }
+      if (/无法连接到|Failed to fetch|Network request failed/i.test(message)) {
+        message = '网络连接异常，请重新上传，照片已保留。';
+      }
+
+      const isUnauthorized = error instanceof BackendApiError && error.status === 401;
+      if (isUnauthorized) {
+        message = '登录状态已失效，请重新登录后重试，照片已保留。';
+      }
       setAnalysisError(message);
       setAnalysisState('error');
+
+      if (isUnauthorized) {
+        try {
+          await signOut(operation.token);
+        } catch {
+          if (!sessionRef.current.token && photoOwnerRef.current === operation) {
+            setAnalysisError(message + '已退出当前会话，但未能清除本地登录记录。');
+          }
+        }
+      }
+    }
+  };
+
+  const handleCapture = async () => {
+    if (!active || signal?.aborted) return;
+    if (!canAnalyze) {
+      setAnalysisError('请先登录，再拍照识别食物热量。');
+      setAnalysisState('error');
+      return;
+    }
+    if (renderedSession !== sessionRef.current || operationRef.current || isCapturing || !token) {
+      return;
+    }
+
+    const operation = { ...renderedSession, token, controller: new AbortController() };
+    const cancel = () => operation.controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    operationRef.current = operation;
+    photoOwnerRef.current = operation;
+    try {
+      const picture = await takePhoto(() => isCurrent(operation));
+      if (!isCurrent(operation)) return;
+      if (picture) {
+        await analyzePhoto(picture, operation);
+      }
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      if (operationRef.current === operation) operationRef.current = null;
     }
   };
 
   const handleRetake = () => {
+    if (operationRef.current) {
+      return;
+    }
     clearPhoto();
+    photoOwnerRef.current = null;
     setAnalysisState('idle');
     setAnalysisResult(null);
     setAnalysisError(null);
   };
 
   const handleRetryUpload = async () => {
-    if (!lastPhoto) {
+    if (!active || signal?.aborted) return;
+    if (renderedSession !== sessionRef.current || !lastPhoto || operationRef.current) {
       return;
     }
 
-    setAnalysisState('analyzing');
-    setAnalysisError(null);
-
-    try {
-      const result = await analyzeMealPhoto(lastPhoto);
-      setAnalysisResult(result);
-      setAnalysisState('success');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '热量识别失败，请稍后再试。';
-      setAnalysisError(message);
+    if (!canAnalyze || !token) {
+      setAnalysisError('请先登录，再识别食物热量。照片会保留，登录后可以重新上传。');
       setAnalysisState('error');
+      return;
+    }
+    const operation = { ...renderedSession, token, controller: new AbortController() };
+    const cancel = () => operation.controller.abort();
+    signal?.addEventListener('abort', cancel, { once: true });
+    operationRef.current = operation;
+    photoOwnerRef.current = operation;
+    try {
+      await analyzePhoto(lastPhoto, operation);
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      if (operationRef.current === operation) operationRef.current = null;
     }
   };
 
@@ -143,7 +254,13 @@ export function CalorieCameraPage() {
         ? '识别完成'
         : analysisState === 'error'
           ? '识别失败'
-          : isCameraReady
+          : !canAnalyze
+            ? isHydrating ? '正在恢复登录状态' : '请先登录'
+            : !hasPermission && !isPermissionLoading
+            ? '相机权限未开启'
+            : errorMessage
+            ? '相机不可用'
+            : isCameraReady
             ? '请把食物放进取景框'
             : '正在打开相机';
 
@@ -154,7 +271,9 @@ export function CalorieCameraPage() {
         ? analysisResult?.summary ?? '识别结果已经准备好，你也可以继续重拍下一份食物。'
         : analysisState === 'error'
           ? analysisError ?? '这次识别没有完成，请稍后再试。'
-          : '拍下食物后会自动开始识别，并给出热量估算。';
+          : !canAnalyze
+            ? '登录后即可拍照识别食物热量。'
+            : '拍下食物后会自动开始识别，并给出热量估算。';
 
   return (
     <SafeAreaView edges={['top']} style={styles.safeArea}>
@@ -186,14 +305,18 @@ export function CalorieCameraPage() {
           <View style={styles.cameraStage}>
             {lastPhoto ? (
               <Image contentFit="cover" source={{ uri: lastPhoto.uri }} style={styles.cameraFill} />
-            ) : hasPermission ? (
+            ) : hasPermission && active ? (
               <CameraView
+                key={facing}
                 ref={cameraRef}
                 style={styles.cameraFill}
                 facing={facing}
                 mirror={facing === 'front'}
-                onCameraReady={markCameraReady}
-                onMountError={(error) => setCameraError(error.message)}
+                onCameraReady={() => { if (!mountFailedRef.current) markCameraReady(); }}
+                onMountError={() => {
+                  mountFailedRef.current = true;
+                  setCameraError('无法打开相机，请确认设备存在且未被其他应用占用。');
+                }}
               />
             ) : (
               <View style={styles.lockedStage}>
@@ -211,7 +334,12 @@ export function CalorieCameraPage() {
                 </View>
 
                 {!lastPhoto && hasPermission ? (
-                  <Pressable onPress={toggleFacing} style={styles.overlayGhostButton}>
+                  <Pressable disabled={isCapturing} onPress={() => {
+                    if (!operationRef.current && !isCapturing) {
+                      mountFailedRef.current = false;
+                      toggleFacing();
+                    }
+                  }} style={styles.overlayGhostButton}>
                     <Text style={styles.overlayGhostButtonText}>切换镜头</Text>
                   </Pressable>
                 ) : null}
@@ -220,13 +348,16 @@ export function CalorieCameraPage() {
               <View style={styles.captureDock}>
                 {!lastPhoto ? (
                   <>
-                    <Text style={styles.captureHint}>对准餐盘，点击快门后自动识别热量</Text>
+                    <Text style={styles.captureHint}>
+                      {canAnalyze ? '对准餐盘，点击快门后自动识别热量' : '请先登录，再拍照识别热量'}
+                    </Text>
                     <Pressable
-                      disabled={!hasPermission || !isCameraReady || isCapturing}
-                      onPress={() => void handleCapture()}
+                      accessibilityLabel="拍照并识别食物热量"
+                      disabled={!active || !canAnalyze || !hasPermission || !isCameraReady || isCapturing}
+                      onPress={handleCapture}
                       style={[
                         styles.captureButton,
-                        (!hasPermission || !isCameraReady || isCapturing) &&
+                        (!canAnalyze || !hasPermission || !isCameraReady || isCapturing) &&
                           styles.captureButtonDisabled,
                       ]}>
                       <View style={styles.captureButtonInner} />
@@ -241,8 +372,13 @@ export function CalorieCameraPage() {
                       <Text style={styles.overlayGhostButtonText}>重新拍摄</Text>
                     </Pressable>
                     {analysisState === 'error' ? (
-                      <Pressable onPress={() => void handleRetryUpload()} style={styles.overlaySolidButton}>
-                        <Text style={styles.overlaySolidButtonText}>重新上传</Text>
+                      <Pressable
+                        disabled={isHydrating}
+                        onPress={canAnalyze ? handleRetryUpload : () => router.navigate('/(tabs)/profile')}
+                        style={styles.overlaySolidButton}>
+                        <Text style={styles.overlaySolidButtonText}>
+                          {canAnalyze ? '重新上传' : '登录后重试'}
+                        </Text>
                       </Pressable>
                     ) : null}
                   </View>
@@ -262,6 +398,13 @@ export function CalorieCameraPage() {
           <View style={styles.boardFooter}>
             <Text style={styles.boardFooterText}>{helperText}</Text>
             {errorMessage ? <Text style={styles.errorText}>相机出现问题：{errorMessage}</Text> : null}
+            {!canAnalyze && !isHydrating && !lastPhoto ? (
+              <Pressable
+                onPress={() => router.navigate('/(tabs)/profile')}
+                style={styles.overlaySolidButton}>
+                <Text style={styles.overlaySolidButtonText}>前往登录</Text>
+              </Pressable>
+            ) : null}
           </View>
         </View>
 

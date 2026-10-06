@@ -8,7 +8,12 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm lint && pnpm typecheck && pnpm test:frontend && pnpm test:login",
+    "test:agent": "node tests/agent-display.test.cjs",
+    "test:frontend": "node scripts/test-frontend.cjs",
+    "test:login": "node tests/login-live.test.cjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

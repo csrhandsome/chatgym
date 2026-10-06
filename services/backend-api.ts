@@ -1,14 +1,16 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { createApiConnectionError, getApiBaseUrl } from '@/services/api-config';
 import { extractFitnessPlan, type FitnessPlan } from '@/services/fitness-plan';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
 const AUTH_LOGIN_API_PATH = '/api/auth/login';
 const AUTH_REGISTER_API_PATH = '/api/auth/register';
+const AUTH_ME_API_PATH = '/api/auth/me';
 const PLAN_API_PATH = normalizeApiPath(process.env.EXPO_PUBLIC_PLAN_API_PATH) ?? '/api/agent/plan';
 const CHAT_API_PATH = normalizeApiPath(process.env.EXPO_PUBLIC_CHAT_API_PATH) ?? PLAN_API_PATH;
 
 export const AUTH_TOKEN_STORAGE_KEY = 'userToken';
+export const AUTH_IDENTITY_STORAGE_KEY = 'userIdentity';
 
 export type LoginCredentials = {
   password: string;
@@ -17,7 +19,10 @@ export type LoginCredentials = {
 
 export type LoginResponse = Record<string, unknown> & {
   token: string;
+  user: AuthUser;
 };
+
+export type AuthUser = { id: string; username: string };
 
 export type ChatMessageKind = 'answer' | 'thought' | 'tool';
 
@@ -40,12 +45,29 @@ type JsonRequestInit = Omit<RequestInit, 'headers'> & {
   headers?: Record<string, string>;
 };
 
+export class BackendApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'BackendApiError';
+  }
+}
+
 export async function register(credentials: LoginCredentials): Promise<LoginResponse> {
   return await authenticate(AUTH_REGISTER_API_PATH, credentials);
 }
 
 export async function login(credentials: LoginCredentials): Promise<LoginResponse> {
   return await authenticate(AUTH_LOGIN_API_PATH, credentials);
+}
+
+export async function getCurrentUser(token: string): Promise<{ user: AuthUser }> {
+  const payload = await requestJson(AUTH_ME_API_PATH, {
+    headers: { Authorization: `Bearer ${token}` },
+    method: 'GET',
+  });
+  const user = extractAuthUser(payload);
+  if (!user) throw new BackendApiError('登录信息不完整，请稍后重试。', 502);
+  return { user };
 }
 
 export async function generatePlan(
@@ -98,27 +120,54 @@ export async function getStoredUserToken(): Promise<string | null> {
   return await AsyncStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 }
 
-export async function storeUserToken(token: string): Promise<void> {
+export async function getStoredUserId(token: string): Promise<string | null> {
+  const raw = await AsyncStorage.getItem(AUTH_IDENTITY_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const identity: unknown = JSON.parse(raw);
+    return isRecord(identity) && identity.token === token && typeof identity.userId === 'string' && identity.userId.trim()
+      ? identity.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function storeUserToken(token: string, userId?: string): Promise<void> {
   await AsyncStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+  if (userId) {
+    await AsyncStorage.setItem(AUTH_IDENTITY_STORAGE_KEY, JSON.stringify({ token, userId }));
+  } else {
+    await AsyncStorage.removeItem(AUTH_IDENTITY_STORAGE_KEY);
+  }
 }
 
 export async function clearStoredUserToken(): Promise<void> {
-  await AsyncStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  try {
+    await AsyncStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  } finally {
+    await AsyncStorage.removeItem(AUTH_IDENTITY_STORAGE_KEY);
+  }
 }
 
 async function requestJson(path: string, init: JsonRequestInit = {}): Promise<unknown> {
-  const response = await fetch(`${getApiBaseUrl()}${path}`, {
-    ...init,
-    headers: {
-      Accept: 'application/json',
-      ...init.headers,
-    },
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${getApiBaseUrl()}${path}`, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...init.headers,
+      },
+    });
+  } catch (error) {
+    throw createApiConnectionError(path, error);
+  }
 
   const payload = await parseResponseBody(response);
 
   if (!response.ok) {
-    throw new Error(
+    throw new BackendApiError(
       toUserFacingServiceMessage(
         extractMessage(payload),
         response.status === 401
@@ -126,7 +175,8 @@ async function requestJson(path: string, init: JsonRequestInit = {}): Promise<un
           : response.status === 403
             ? '当前账号暂时无法执行这个操作。'
             : '服务暂时不可用，请稍后再试。'
-      )
+      ),
+      response.status
     );
   }
 
@@ -802,15 +852,24 @@ async function authenticate(
   });
 
   const token = extractToken(payload);
+  const user = extractAuthUser(payload);
 
-  if (!token) {
+  if (!token || !user) {
     throw new Error('登录已完成，但状态保存失败，请稍后重试。');
   }
 
   return {
     ...(isRecord(payload) ? payload : {}),
     token,
+    user,
   };
+}
+
+function extractAuthUser(payload: unknown): AuthUser | null {
+  if (!isRecord(payload) || !isRecord(payload.user)) return null;
+  const { id, username } = payload.user;
+  return typeof id === 'string' && id.trim() && typeof username === 'string' && username.trim()
+    ? { id, username } : null;
 }
 
 function usesAgentPlanEndpoint(path: string): boolean {
@@ -821,17 +880,15 @@ function createAgentPlanPayload(input: {
   history?: ChatHistoryItem[];
   message: string;
 }): Record<string, unknown> {
-  const requestNote = compactText(
-    [
-      input.message.trim(),
-      formatChatHistoryForPlan(input.history ?? []),
-    ]
-      .filter(Boolean)
-      .join('\n\n'),
-    1800
-  );
+  const requestNote = input.message.trim().slice(0, 2000);
+  const chatHistory = (input.history ?? [])
+    .filter((item) => item.kind !== 'tool' && item.kind !== 'thought')
+    .slice(-14)
+    .map((item) => ({ role: item.role, text: item.text.trim().slice(0, 2000) }))
+    .filter((item) => item.text);
 
   return {
+    chatHistory,
     currentState: {
       soreness: [],
     },
@@ -863,44 +920,8 @@ function createAgentPlanPayload(input: {
   };
 }
 
-function formatChatHistoryForPlan(history: ChatHistoryItem[]): string {
-  const lines = history
-    .slice(-6)
-    .map((item) => {
-      const speaker = item.role === 'user' ? '用户' : '助手';
-      const body = compactText(item.text, 220);
-
-      return body ? `${speaker}: ${body}` : null;
-    })
-    .filter((item): item is string => Boolean(item));
-
-  if (lines.length === 0) {
-    return '';
-  }
-
-  return `最近对话上下文：\n${lines.join('\n')}`;
-}
-
-function compactText(value: string, maxLength: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
 function looksLikePlanRecord(payload: Record<string, unknown>): boolean {
   return Array.isArray(payload.weeklySchedule) || Array.isArray(payload.progressionRules);
-}
-
-function getApiBaseUrl(): string {
-  if (!API_BASE_URL) {
-    throw new Error('服务连接尚未配置完成，请稍后再试。');
-  }
-
-  return API_BASE_URL;
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -1110,6 +1131,10 @@ function toUserFacingServiceMessage(
 
   if (/token|bearer/i.test(trimmed)) {
     return '登录状态已失效，请重新登录。';
+  }
+
+  if (/username already exists/i.test(trimmed)) {
+    return '账号已存在，请更换账号或直接登录。';
   }
 
   if (/username|password/i.test(trimmed)) {

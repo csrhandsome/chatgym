@@ -43,10 +43,22 @@ export type FitnessPlan = {
   updatedAt: number;
 };
 
+type FitnessPlanListener = (plan: FitnessPlan | null) => void;
+
 type ExerciseSource = {
   context?: string;
   value: unknown;
 };
+
+const fitnessPlanListeners = new Map<string, Set<FitnessPlanListener>>();
+const fitnessPlanWrites = new Map<string, Promise<void>>();
+
+export function getFitnessPlanStorageKey(userId: string): string {
+  if (!userId.trim() || userId !== userId.trim()) {
+    throw new Error('训练计划需要有效的登录用户身份。');
+  }
+  return `${FITNESS_PLAN_STORAGE_KEY}:${encodeURIComponent(userId)}`;
+}
 
 const EXERCISE_ARRAY_KEYS = [
   'exercises',
@@ -107,8 +119,11 @@ const CONTAINER_KEYS = [
   '数据',
 ] as const;
 
-export async function getStoredFitnessPlan(): Promise<FitnessPlan | null> {
-  const rawValue = await AsyncStorage.getItem(FITNESS_PLAN_STORAGE_KEY);
+export async function getStoredFitnessPlan(userId: string | null): Promise<FitnessPlan | null> {
+  if (!userId) return null;
+  const key = getFitnessPlanStorageKey(userId);
+  await fitnessPlanWrites.get(key)?.catch(() => undefined);
+  const rawValue = await AsyncStorage.getItem(key);
 
   if (!rawValue) {
     return null;
@@ -128,8 +143,32 @@ export async function getStoredFitnessPlan(): Promise<FitnessPlan | null> {
   return null;
 }
 
-export async function storeFitnessPlan(plan: FitnessPlan): Promise<void> {
-  await AsyncStorage.setItem(FITNESS_PLAN_STORAGE_KEY, JSON.stringify(plan));
+export async function storeFitnessPlan(plan: FitnessPlan, userId: string): Promise<void> {
+  const key = getFitnessPlanStorageKey(userId);
+  // Snapshot and serialize writes so slow storage cannot roll back newer edits.
+  const snapshot = JSON.parse(JSON.stringify(plan)) as FitnessPlan;
+  const next = (fitnessPlanWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    await AsyncStorage.setItem(key, JSON.stringify(snapshot));
+    // A queued newer edit is already visible; publishing this older snapshot
+    // would reset the screen and could overwrite further edits made there.
+    if (fitnessPlanWrites.get(key) === next) notifyFitnessPlanListeners(userId, snapshot);
+  });
+  fitnessPlanWrites.set(key, next);
+  try { await next; }
+  finally { if (fitnessPlanWrites.get(key) === next) fitnessPlanWrites.delete(key); }
+}
+
+export function subscribeToFitnessPlan(userId: string | null, listener: FitnessPlanListener): () => void {
+  if (!userId) return () => {};
+  getFitnessPlanStorageKey(userId);
+  const listeners = fitnessPlanListeners.get(userId) ?? new Set<FitnessPlanListener>();
+  listeners.add(listener);
+  fitnessPlanListeners.set(userId, listeners);
+
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) fitnessPlanListeners.delete(userId);
+  };
 }
 
 export function extractFitnessPlan(
@@ -217,8 +256,15 @@ function normalizeFitnessPlan(value: unknown): FitnessPlan | null {
       typeof value.sourceTitle === 'string' && value.sourceTitle ? value.sourceTitle : undefined,
     summary: typeof value.summary === 'string' ? value.summary : '',
     title: typeof value.title === 'string' && value.title ? value.title : '训练计划',
-    updatedAt: typeof value.updatedAt === 'number' ? value.updatedAt : Date.now(),
+    updatedAt: typeof value.updatedAt === 'number' && Number.isFinite(new Date(value.updatedAt).getTime())
+      ? value.updatedAt : Date.now(),
   };
+}
+
+function notifyFitnessPlanListeners(userId: string, plan: FitnessPlan | null) {
+  for (const listener of fitnessPlanListeners.get(userId) ?? []) {
+    listener(plan);
+  }
 }
 
 function normalizeStoredExercise(value: unknown): FitnessPlanExercise | null {
@@ -253,11 +299,12 @@ function normalizeStoredSet(value: unknown, index: number): FitnessPlanSet | nul
   }
 
   return {
-    completed: Boolean(value.completed),
+    completed: value.completed === true,
     id: typeof value.id === 'string' && value.id ? value.id : `set-${Date.now()}-${index}`,
     kg: typeof value.kg === 'string' ? value.kg : '',
     reps: typeof value.reps === 'string' ? value.reps : '',
-    setNumber: typeof value.setNumber === 'number' ? value.setNumber : index + 1,
+    setNumber: typeof value.setNumber === 'number' && Number.isSafeInteger(value.setNumber) && value.setNumber > 0
+      ? value.setNumber : index + 1,
   };
 }
 
@@ -426,7 +473,9 @@ function normalizeExerciseSets(record: Record<string, unknown>): FitnessPlanSet[
     record.reps ?? record.rep ?? record.count ?? record.targetReps ?? record['次数']
   );
 
-  if (typeof rawSets === 'number' && Number.isFinite(rawSets) && rawSets > 0) {
+  // Treat unreasonable model output as one editable row rather than allocating
+  // an unbounded list or silently accepting fractional group counts.
+  if (typeof rawSets === 'number' && Number.isSafeInteger(rawSets) && rawSets > 0 && rawSets <= 100) {
     return Array.from({ length: rawSets }, (_, index) =>
       createSetRow(index + 1, exerciseKg, exerciseReps)
     );

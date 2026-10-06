@@ -76,6 +76,8 @@ function TabButton({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: isFocused }}
       onLongPress={onLongPress}
       onPress={onPress}
       style={styles.tabSlot}>

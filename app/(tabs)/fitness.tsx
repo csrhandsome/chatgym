@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -12,41 +12,67 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { FitnessExerciseCard } from '@/components/fitness-exercise-card';
 import { sketchTheme } from '@/constants/theme';
+import { useAuth } from '@/hooks/use-auth';
 import {
   getStoredFitnessPlan,
   storeFitnessPlan,
+  subscribeToFitnessPlan,
   type FitnessPlan,
   type FitnessPlanSet,
 } from '@/services/fitness-plan';
 
 export default function FitnessScreen() {
-  const [plan, setPlan] = useState<FitnessPlan | null>(null);
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const { userId } = useAuth();
+  const [storedPlan, setPlan] = useState<FitnessPlan | null>(null);
+  const [storedFeedback, setFeedback] = useState<string | null>(null);
+  const [loading, setIsLoading] = useState(Boolean(userId));
+  const sessionRef = useRef({ userId, generation: 0 });
+  const readRef = useRef(0);
+  const planRef = useRef<FitnessPlan | null>(null);
+  const belongsToAccount = sessionRef.current.userId === userId;
+  const plan = belongsToAccount ? storedPlan : null;
+  const feedback = belongsToAccount ? storedFeedback : null;
+  const isLoading = Boolean(userId) && (!belongsToAccount || loading);
+
+  useLayoutEffect(() => {
+    if (sessionRef.current.userId !== userId) {
+      sessionRef.current = { userId, generation: sessionRef.current.generation + 1 };
+      readRef.current += 1;
+      planRef.current = null;
+      setPlan(null);
+      setFeedback(null);
+      setIsLoading(Boolean(userId));
+    }
+  }, [userId]);
 
   const loadPlan = useCallback(() => {
     let isActive = true;
+    const generation = sessionRef.current.generation;
+    const requestNumber = ++readRef.current;
+    const canUpdate = () => isActive && sessionRef.current.userId === userId &&
+      sessionRef.current.generation === generation && readRef.current === requestNumber;
 
-    setIsLoading(true);
+    setIsLoading(Boolean(userId));
 
     void (async () => {
       try {
-        const storedPlan = await getStoredFitnessPlan();
+        const nextPlan = await getStoredFitnessPlan(userId);
 
-        if (!isActive) {
+        if (!canUpdate()) {
           return;
         }
 
-        setPlan(storedPlan);
+        planRef.current = nextPlan;
+        setPlan(nextPlan);
         setFeedback(null);
       } catch (error) {
-        if (!isActive) {
+        if (!canUpdate()) {
           return;
         }
 
         setFeedback(getErrorMessage(error));
       } finally {
-        if (isActive) {
+        if (canUpdate()) {
           setIsLoading(false);
         }
       }
@@ -55,30 +81,39 @@ export default function FitnessScreen() {
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [userId]);
 
   useFocusEffect(loadPlan);
 
-  function updatePlan(updater: (currentPlan: FitnessPlan) => FitnessPlan) {
-    setPlan((currentPlan) => {
-      if (!currentPlan) {
-        return currentPlan;
-      }
-
-      const nextPlan = updater(currentPlan);
-
-      void persistPlan(nextPlan);
-
-      return nextPlan;
+  useEffect(() => {
+    let isActive = true;
+    const generation = sessionRef.current.generation;
+    const unsubscribe = subscribeToFitnessPlan(userId, (nextPlan) => {
+      if (!isActive || sessionRef.current.userId !== userId || sessionRef.current.generation !== generation) return;
+      readRef.current += 1;
+      planRef.current = nextPlan;
+      setPlan(nextPlan);
+      setFeedback(null);
+      setIsLoading(false);
     });
+    return () => { isActive = false; unsubscribe(); };
+  }, [userId]);
+
+  function updatePlan(updater: (currentPlan: FitnessPlan) => FitnessPlan) {
+    if (!userId || sessionRef.current.userId !== userId || !planRef.current) return;
+    const nextPlan = updater(planRef.current);
+    planRef.current = nextPlan;
+    setPlan(nextPlan);
+    void persistPlan(nextPlan, userId, sessionRef.current.generation);
   }
 
-  async function persistPlan(nextPlan: FitnessPlan) {
+  async function persistPlan(nextPlan: FitnessPlan, ownerId: string, generation: number) {
+    const isCurrentAccount = () => sessionRef.current.userId === ownerId && sessionRef.current.generation === generation;
     try {
-      await storeFitnessPlan(nextPlan);
-      setFeedback(null);
+      await storeFitnessPlan(nextPlan, ownerId);
+      if (isCurrentAccount()) setFeedback(null);
     } catch (error) {
-      setFeedback(getErrorMessage(error));
+      if (isCurrentAccount()) setFeedback(getErrorMessage(error));
     }
   }
 
@@ -96,6 +131,41 @@ export default function FitnessScreen() {
                   : {
                       ...setItem,
                       completed: !setItem.completed,
+                    }
+              ),
+            }
+      ),
+      updatedAt: Date.now(),
+    }));
+  }
+
+  function handleUpdateSet(
+    exerciseId: string,
+    setId: string,
+    field: 'kg' | 'reps',
+    value: string
+  ) {
+    const normalizedValue = value.trim();
+    const isValid = normalizedValue === '' || (field === 'kg'
+      ? /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalizedValue) && Number.isFinite(Number(normalizedValue))
+      : /^\d+$/.test(normalizedValue) && Number.isSafeInteger(Number(normalizedValue)) && Number(normalizedValue) > 0);
+    if (!isValid) {
+      setFeedback(field === 'kg' ? '重量需要为非负数字，可以使用小数或留空。' : '次数需要为正整数，或留空。');
+      return;
+    }
+    updatePlan((currentPlan) => ({
+      ...currentPlan,
+      exercises: currentPlan.exercises.map((exercise) =>
+        exercise.id !== exerciseId
+          ? exercise
+          : {
+              ...exercise,
+              sets: exercise.sets.map((setItem) =>
+                setItem.id !== setId
+                  ? setItem
+                  : {
+                      ...setItem,
+                      [field]: normalizedValue,
                     }
               ),
             }
@@ -178,7 +248,7 @@ export default function FitnessScreen() {
             <Text style={styles.loadingText}>正在读取最近保存的训练计划...</Text>
           </View>
         ) : plan ? (
-          <>
+          <Fragment key={plan.id}>
             <View style={[styles.card, styles.overviewCard]}>
               <Text style={styles.sectionLabel}>计划概览</Text>
               <Text style={styles.sectionTitle}>{plan.title}</Text>
@@ -217,7 +287,7 @@ export default function FitnessScreen() {
             <View style={styles.listSection}>
               <Text style={styles.sectionTitle}>动作清单</Text>
               <Text style={styles.sectionHint}>
-                点击卡片查看动作说明和每组安排。新增一组会沿用上一组的重量和次数。
+                点击卡片查看动作说明和每组安排。重量和次数可以直接修改，新增一组会先沿用上一组的数据。
               </Text>
 
               <View style={styles.exerciseList}>
@@ -227,15 +297,18 @@ export default function FitnessScreen() {
                     exercise={exercise}
                     onAddSet={() => handleAddSet(exercise.id)}
                     onToggleSet={(setId) => handleToggleSet(exercise.id, setId)}
+                    onUpdateSet={(setId, field, value) =>
+                      handleUpdateSet(exercise.id, setId, field, value)
+                    }
                   />
                 ))}
               </View>
             </View>
-          </>
+          </Fragment>
         ) : (
           <View style={[styles.card, styles.emptyCard]}>
             <Text style={styles.emptyEyebrow}>还没有训练计划</Text>
-            <Text style={styles.emptyTitle}>先去聊天页生成训练计划</Text>
+            <Text style={styles.emptyTitle}>{userId ? '先去聊天页生成训练计划' : '请先登录查看你的训练计划'}</Text>
             <Text style={styles.emptyText}>
               把你的目标、频率和器械条件告诉教练，生成后会自动同步到这里。
             </Text>

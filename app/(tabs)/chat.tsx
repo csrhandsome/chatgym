@@ -1,5 +1,5 @@
-import { startTransition, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { startTransition, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   Composer,
   GiftedChat,
@@ -9,120 +9,242 @@ import {
   type InputToolbarProps,
   type MessageProps,
   type SendProps,
-} from 'react-native-gifted-chat';
-import { SafeAreaView } from 'react-native-safe-area-context';
+} from "react-native-gifted-chat";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import {
-  AGENT_PLAN_API_PATH_LABEL,
-  sendAgentMessage,
-  type ChatHistoryItem,
-  type ChatResponseChunk,
-} from '@/services/agent-api';
 import {
   ChatMessageCard,
   type ChatMessageCardData,
-} from '@/components/chat/chat-message-card';
-import { sketchTheme } from '@/constants/theme';
-import { useAuth } from '@/hooks/use-auth';
-import { storeFitnessPlan } from '@/services/fitness-plan';
+} from "@/components/chat/chat-message-card";
+import { sketchTheme } from "@/constants/theme";
+import { useAuth } from "@/hooks/use-auth";
+import {
+  sendAgentMessage,
+  MAX_CHAT_MESSAGE_LENGTH,
+  type ChatHistoryItem,
+  type ChatResponseChunk,
+} from "@/services/agent-api";
+import { storeFitnessPlan } from "@/services/fitness-plan";
+import { BackendApiError } from "@/services/backend-api";
 
 const CURRENT_USER = {
-  _id: 'chatgym-user',
-  name: '你',
+  _id: "chatgym-user",
+  name: "你",
 } as const;
 
 const ASSISTANT_USER = {
-  _id: 'chatgym-agent',
-  name: 'ChatGym Agent',
+  _id: "chatgym-agent",
+  name: "ChatGym Agent",
 } as const;
 
-type ChatUiMessage = IMessage & {
-  kind: ChatMessageCardData['kind'];
-  title?: string;
-};
+type ChatUiMessage = IMessage & Omit<ChatMessageCardData, "createdAt" | "text">;
 
 export default function ChatScreen() {
-  const { isAuthenticated, isHydrating, token } = useAuth();
-  const [messages, setMessages] = useState<ChatUiMessage[]>(() => createInitialMessages());
-  const [draftText, setDraftText] = useState('');
+  const { token, userId, signOut } = useAuth();
+  const [messages, setMessages] = useState<ChatUiMessage[]>([]);
+  const [draftText, setDraftText] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const submittingRef = useRef(false);
+  const requestRef = useRef<AbortController | null>(null);
+  const sessionRef = useRef({ token, userId, generation: 0 });
+  const belongsToSession = sessionRef.current.token === token && sessionRef.current.userId === userId;
+
+  useLayoutEffect(() => {
+    if (sessionRef.current.token !== token || sessionRef.current.userId !== userId) {
+      requestRef.current?.abort();
+      requestRef.current = null;
+      sessionRef.current = { token, userId, generation: sessionRef.current.generation + 1 };
+      submittingRef.current = false;
+      setMessages([]);
+      setDraftText("");
+      setFeedback(null);
+      setIsSubmitting(false);
+      setIsSyncing(false);
+    }
+  }, [token, userId]);
+
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+    sessionRef.current.generation += 1;
+    submittingRef.current = false;
+  }, []);
 
   async function handleSend(outgoingMessages: ChatUiMessage[] = []) {
     const draft = outgoingMessages[0];
-    const messageText = draft?.text?.trim();
+    const messageText = typeof draft?.text === "string" ? draft.text.trim() : "";
 
     if (!messageText) {
       return;
     }
 
+    // An event from an earlier render cannot start work for a different account.
+    if (sessionRef.current.token !== token || sessionRef.current.userId !== userId) {
+      return;
+    }
+
+    if (!token) {
+      setFeedback("请先到 Profile 页登录，再开始生成训练计划。");
+      return;
+    }
+
+    if (!userId) {
+      setFeedback("暂时无法验证账号身份，请到 Profile 页重新登录后再生成计划。");
+      return;
+    }
+
+    if (submittingRef.current) {
+      return;
+    }
+    if (messageText.length > MAX_CHAT_MESSAGE_LENGTH) {
+      setFeedback(`聊天输入最多 ${MAX_CHAT_MESSAGE_LENGTH} 字，请缩短后发送。`);
+      return;
+    }
+    submittingRef.current = true;
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const generation = sessionRef.current.generation;
+    const isCurrentSession = () => sessionRef.current.token === token &&
+      sessionRef.current.userId === userId &&
+      sessionRef.current.generation === generation;
+
     const userMessage: ChatUiMessage = {
       ...draft,
       createdAt: new Date(),
-      kind: 'user',
+      kind: "user",
       text: messageText,
       title: undefined,
       user: CURRENT_USER,
     };
 
     setFeedback(null);
-    setDraftText('');
-    setMessages((currentMessages) => GiftedChat.append(currentMessages, [userMessage]));
+    setDraftText("");
+    setMessages((currentMessages) =>
+      GiftedChat.append(currentMessages, [userMessage]),
+    );
     setIsSubmitting(true);
+    const streamedMessageIds = new Set<string>();
 
     try {
       const response = await sendAgentMessage(
         token,
         {
-          history: buildChatHistory([userMessage, ...messages]),
+          history: buildChatHistory(messages),
           message: messageText,
         },
         {
+          signal: controller.signal,
           onChunk(chunk) {
+            if (!isCurrentSession()) return;
+            streamedMessageIds.add(chunk.id);
             startTransition(() => {
-              setMessages((currentMessages) =>
-                GiftedChat.append(currentMessages, [createAssistantMessage(chunk)])
-              );
+              setMessages((currentMessages) => !isCurrentSession() ? currentMessages : GiftedChat.append(
+                currentMessages.map((message) =>
+                  chunk.toolCallId && message.toolCallId === chunk.toolCallId &&
+                  streamedMessageIds.has(String(message._id)) && message.status === "running" && chunk.status !== "running"
+                    ? { ...message, status: chunk.status }
+                    : message,
+                ),
+                [createAssistantMessage({
+                  ...chunk,
+                  status: chunk.status === "running" && chunk.toolCallId
+                    ? currentMessages.find((message) => message.toolCallId === chunk.toolCallId &&
+                      streamedMessageIds.has(String(message._id)) && message.status && message.status !== "running")?.status ?? chunk.status
+                    : chunk.status,
+                })],
+              ));
             });
           },
-        }
+        },
       );
+
+      if (!isCurrentSession() || controller.signal.aborted) return;
+
+      const toolStatuses = new Map(response.chunks
+        .filter((chunk) => chunk.toolCallId && chunk.status && chunk.status !== "running")
+        .map((chunk) => [chunk.toolCallId, chunk.status]));
+      const finishStatus = (message: Pick<ChatResponseChunk, "status" | "toolCallId">) =>
+        message.status === "running"
+          ? (message.toolCallId ? toolStatuses.get(message.toolCallId) : undefined) ?? "failed"
+          : message.status;
 
       const latestFitnessPlan = [...response.chunks]
         .reverse()
-        .find((chunk) => chunk.fitnessPlan)?.fitnessPlan;
+        .find((chunk) => chunk.fitnessPlan && chunk.status !== "failed")?.fitnessPlan;
+
+      // Resolve every call in this request, including results received before
+      // their calls and calls whose result never arrived.
+      if (response.delivery === "stream") {
+        setMessages((currentMessages) => !isCurrentSession() ? currentMessages : currentMessages.map((message) =>
+          streamedMessageIds.has(String(message._id)) ? { ...message, status: finishStatus(message) } : message,
+        ));
+      }
 
       if (latestFitnessPlan) {
+        setIsSyncing(true);
         try {
-          await storeFitnessPlan(latestFitnessPlan);
+          await storeFitnessPlan(latestFitnessPlan, userId);
         } catch {
-          setFeedback('训练计划已经生成，但同步到 Fitness 页失败。');
+          if (isCurrentSession()) {
+            setFeedback("训练计划已经生成，但同步到 Fitness 页失败。");
+          }
         }
       }
 
-      if (response.delivery === 'json') {
-        const assistantMessages = response.chunks.map((chunk, index) =>
-          createAssistantMessage(chunk, Date.now() + index)
-        );
+      if (!isCurrentSession()) return;
 
-        setMessages((currentMessages) => GiftedChat.append(currentMessages, assistantMessages));
+      if (response.delivery === "json") {
+        const assistantMessages = response.chunks.map((chunk, index) =>
+          createAssistantMessage({
+            ...chunk,
+            status: finishStatus(chunk),
+          }, Date.now() + index),
+        ).reverse();
+
+        setMessages((currentMessages) =>
+          isCurrentSession() ? GiftedChat.append(currentMessages, assistantMessages) : currentMessages,
+        );
       }
     } catch (error) {
-      const errorMessage = getErrorMessage(error);
+      if (!isCurrentSession()) return;
+      const wasCancelled = controller.signal.aborted;
+      const errorMessage = wasCancelled ? "已取消生成，未同步训练计划。" : getErrorMessage(error);
 
       setFeedback(errorMessage);
+      if (error instanceof BackendApiError && error.status === 401) {
+        try {
+          await signOut(token);
+        } catch {
+          if (isCurrentSession()) {
+            setFeedback(`${errorMessage} 无法清理已保存的登录信息，请在 Profile 页重试退出。`);
+          }
+        }
+      }
+      if (!isCurrentSession()) return;
       setMessages((currentMessages) =>
-        GiftedChat.append(currentMessages, [
+        !isCurrentSession() ? currentMessages : GiftedChat.append(currentMessages.map((message) =>
+          streamedMessageIds.has(String(message._id)) && (message.status === "running" || message.kind === "answer")
+            ? { ...message, status: "failed" }
+            : message,
+        ), [
           createAssistantMessage({
             id: `chat-error-${Date.now()}`,
-            kind: 'tool',
+            kind: "tool",
+            status: "failed",
             text: `错误\n${errorMessage}`,
-            title: '请求失败',
+            title: wasCancelled ? "已取消生成" : "请求失败",
           }),
-        ])
+        ]),
       );
     } finally {
-      setIsSubmitting(false);
+      if (requestRef.current === controller) requestRef.current = null;
+      if (isCurrentSession()) {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+        setIsSyncing(false);
+      }
     }
   }
 
@@ -140,6 +262,9 @@ export default function ChatScreen() {
           kind: message.kind,
           text: message.text,
           title: message.title,
+          eventId: message.eventId,
+          status: message.status,
+          toolCallId: message.toolCallId,
         }}
       />
     );
@@ -158,10 +283,15 @@ export default function ChatScreen() {
               {...composerProps}
               textInputProps={{
                 ...composerProps.textInputProps,
-                editable: !isSubmitting,
-                placeholder: '描述你的目标、频率、器械条件，页面会实时显示 agent 过程',
-                placeholderTextColor: '#8C857A',
-                style: [styles.composerText, composerProps.textInputProps?.style],
+                editable: !(belongsToSession && isSubmitting) && Boolean(token && userId),
+                placeholder: token && userId
+                  ? "描述你的目标！准备开始健身计划的定制之旅吧～"
+                  : "请先到 Profile 页登录",
+                placeholderTextColor: "#8C857A",
+                style: [
+                  styles.composerText,
+                  composerProps.textInputProps?.style,
+                ],
               }}
             />
           )}
@@ -172,14 +302,17 @@ export default function ChatScreen() {
   }
 
   function renderSend(sendProps: SendProps<ChatUiMessage>) {
-    const isDisabled = isSubmitting || !sendProps.text?.trim();
+    const isDisabled = !token || !userId || (belongsToSession && isSubmitting) || !sendProps.text?.trim();
 
     if (isDisabled) {
       return (
         <View style={styles.sendContainer}>
           <View style={[styles.sendButton, styles.sendButtonDisabled]}>
-            {isSubmitting ? (
-              <ActivityIndicator color={sketchTheme.colors.white} size="small" />
+            {belongsToSession && isSubmitting ? (
+              <ActivityIndicator
+                color={sketchTheme.colors.white}
+                size="small"
+              />
             ) : (
               <Text style={styles.sendButtonText}>发送</Text>
             )}
@@ -198,10 +331,16 @@ export default function ChatScreen() {
   }
 
   return (
-    <SafeAreaView edges={['top']} style={styles.safeArea}>
+    <SafeAreaView edges={["top"]} style={styles.safeArea}>
       <View style={styles.page}>
-        <View pointerEvents="none" style={[styles.doodleCircle, styles.doodleCircleTop]} />
-        <View pointerEvents="none" style={[styles.doodleCircle, styles.doodleCircleBottom]} />
+        <View
+          pointerEvents="none"
+          style={[styles.doodleCircle, styles.doodleCircleTop]}
+        />
+        <View
+          pointerEvents="none"
+          style={[styles.doodleCircle, styles.doodleCircleBottom]}
+        />
         <View pointerEvents="none" style={styles.dashedLoop} />
 
         <View style={styles.topSection}>
@@ -210,34 +349,36 @@ export default function ChatScreen() {
             <View style={styles.tapeStrip} />
 
             <View style={styles.heroContent}>
-              <Text style={styles.label}>agent workspace</Text>
-              <Text style={styles.title}>训练规划台</Text>
+              <Text style={styles.label}>ChatGym Agent</Text>
+              <Text style={styles.title}>边聊边生成训练计划</Text>
               <Text style={styles.note}>
-                这里直接连到训练计划 agent。后端如果返回流式事件，思考、tool 和最终计划会按时间顺序实时出现。
+                说出你的目标、频率和器械条件，系统会把训练建议实时整理成可执行计划。
               </Text>
             </View>
 
             <View style={styles.metaRow}>
               <View style={styles.metaChip}>
                 <Text style={styles.metaChipText}>
-                  {isHydrating
-                    ? '正在恢复登录态'
-                    : isAuthenticated
-                      ? '已登录，将自动附带 Bearer token'
-                      : '未登录，按当前接口配置也可直接尝试'}
+                  {token && userId ? "已登录，可以开始生成训练计划。" : "请先到 Profile 页登录，再开始对话。"}
                 </Text>
-              </View>
-              <View style={[styles.metaChip, styles.metaChipAlt]}>
-                <Text style={styles.metaChipText}>{AGENT_PLAN_API_PATH_LABEL}</Text>
               </View>
             </View>
           </View>
 
-          {feedback ? (
+          {belongsToSession && feedback ? (
             <View style={[styles.card, styles.feedbackCard]}>
               <Text style={styles.feedbackTitle}>当前反馈</Text>
               <Text style={styles.feedbackText}>{feedback}</Text>
             </View>
+          ) : null}
+          {belongsToSession && isSubmitting && !isSyncing ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="取消生成"
+              onPress={() => requestRef.current?.abort()}
+              style={styles.cancelButton}>
+              <Text style={styles.metaChipText}>取消生成</Text>
+            </Pressable>
           ) : null}
         </View>
 
@@ -245,26 +386,26 @@ export default function ChatScreen() {
           <View pointerEvents="none" style={styles.chatShellShadow} />
           <View style={styles.chatSurface}>
             <GiftedChat<ChatUiMessage>
-              isTyping={isSubmitting}
+              isTyping={belongsToSession && isSubmitting}
               isScrollToBottomEnabled
               isSendButtonAlwaysVisible
               listProps={{
                 contentContainerStyle: styles.messageList,
-                keyboardShouldPersistTaps: 'handled',
+                keyboardShouldPersistTaps: "handled",
                 showsVerticalScrollIndicator: false,
               }}
               maxComposerHeight={120}
-              messages={messages}
+              messages={belongsToSession ? messages : []}
               messagesContainerStyle={styles.messagesContainer}
               minComposerHeight={48}
-              minInputToolbarHeight={72}
+              minInputToolbarHeight={76}
               onSend={(nextMessages) => {
                 void handleSend(nextMessages as ChatUiMessage[]);
               }}
               renderAvatar={null}
               renderInputToolbar={renderInputToolbar}
               renderMessage={renderMessage}
-              text={draftText}
+              text={belongsToSession ? draftText : ""}
               textInputProps={{
                 onChangeText: setDraftText,
               }}
@@ -277,45 +418,9 @@ export default function ChatScreen() {
   );
 }
 
-function createInitialMessages(): ChatUiMessage[] {
-  const now = Date.now();
-
-  return [
-    createAssistantMessage(
-      {
-        id: 'seed-answer',
-        kind: 'answer',
-        text:
-          '你好，我是 ChatGym 训练 agent。\n\n直接告诉我你的训练目标、频率、器械条件或限制，我会把过程拆成思考、tool 和最终计划。',
-        title: 'Agent Ready',
-      },
-      now
-    ),
-    createAssistantMessage(
-      {
-        id: 'seed-tool',
-        kind: 'tool',
-        text:
-          '说明\n这里会展示工具调用和返回结果。\n\n输出\n例如检索训练记忆、读取编排约束、推荐动作。',
-        title: 'Tool Console',
-      },
-      now - 1_000
-    ),
-    createAssistantMessage(
-      {
-        id: 'seed-thought',
-        kind: 'thought',
-        text: '如果后端已切到流式返回，新的步骤会一条条插进来，而不是等全部跑完才一起显示。',
-        title: 'Streaming',
-      },
-      now - 2_000
-    ),
-  ];
-}
-
 function createAssistantMessage(
-  chunk: Pick<ChatResponseChunk, 'id' | 'kind' | 'text' | 'title'>,
-  createdAt: Date | number = Date.now()
+  chunk: Pick<ChatResponseChunk, "id" | "kind" | "text" | "title" | "eventId" | "status" | "toolCallId">,
+  createdAt: Date | number = Date.now(),
 ): ChatUiMessage {
   return {
     _id: chunk.id,
@@ -323,31 +428,42 @@ function createAssistantMessage(
     kind: chunk.kind,
     text: chunk.text,
     title: chunk.title,
+    eventId: chunk.eventId,
+    status: chunk.status,
+    toolCallId: chunk.toolCallId,
     user: ASSISTANT_USER,
   };
 }
 
 function buildChatHistory(messages: ChatUiMessage[]): ChatHistoryItem[] {
+  // GiftedChat stores newest first. Preserve insertion order even when several
+  // messages share a timestamp or the device clock moves backwards.
   return [...messages]
-    .sort((left, right) => toTimestamp(left.createdAt) - toTimestamp(right.createdAt))
+    .reverse()
+    .filter((message) => message.kind === "user" || (message.kind === "answer" && message.status !== "failed"))
     .slice(-14)
     .map((message) => ({
-      kind: message.kind === 'user' ? 'user' : message.kind,
-      role: message.kind === 'user' ? 'user' : 'assistant',
+      kind: message.kind === "user" ? "user" : message.kind,
+      role: message.kind === "user" ? "user" : "assistant",
       text: message.text,
       title: message.title,
     }));
 }
 
-function toTimestamp(value: Date | number): number {
-  return value instanceof Date ? value.getTime() : new Date(value).getTime();
-}
-
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '发生未知错误，请稍后再试。';
+  return error instanceof Error ? error.message : "发生未知错误，请稍后再试。";
 }
 
 const styles = StyleSheet.create({
+  cancelButton: {
+    alignSelf: "flex-end",
+    borderColor: sketchTheme.colors.ink,
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: sketchTheme.colors.white,
+  },
   safeArea: {
     backgroundColor: sketchTheme.colors.paper,
     flex: 1,
@@ -356,7 +472,7 @@ const styles = StyleSheet.create({
     backgroundColor: sketchTheme.colors.paper,
     flex: 1,
     gap: 18,
-    overflow: 'hidden',
+    overflow: "hidden",
     paddingBottom: 12,
     paddingHorizontal: sketchTheme.spacing.page,
     paddingTop: 12,
@@ -365,10 +481,10 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   doodleCircle: {
-    backgroundColor: '#FFE0C2',
+    backgroundColor: "#FFE0C2",
     borderRadius: 999,
     opacity: 0.72,
-    position: 'absolute',
+    position: "absolute",
   },
   doodleCircleTop: {
     height: 18,
@@ -385,14 +501,14 @@ const styles = StyleSheet.create({
   dashedLoop: {
     borderColor: sketchTheme.colors.ink,
     borderRadius: 999,
-    borderStyle: 'dashed',
+    borderStyle: "dashed",
     borderWidth: 2,
     height: 56,
     opacity: 0.3,
-    position: 'absolute',
+    position: "absolute",
     right: 18,
     top: 96,
-    transform: [{ rotate: '12deg' }],
+    transform: [{ rotate: "12deg" }],
     width: 108,
   },
   card: {
@@ -406,7 +522,7 @@ const styles = StyleSheet.create({
     paddingBottom: 22,
     paddingHorizontal: 20,
     paddingTop: 24,
-    position: 'relative',
+    position: "relative",
   },
   heroContent: {
     gap: 8,
@@ -418,34 +534,36 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 2,
     height: 18,
-    position: 'absolute',
+    position: "absolute",
     right: 18,
     top: 16,
     width: 18,
   },
   tapeStrip: {
-    alignSelf: 'center',
-    backgroundColor: '#D9D4CD',
+    alignSelf: "center",
+    backgroundColor: "#D9D4CD",
     borderRadius: 8,
     height: 16,
     opacity: 0.92,
-    position: 'absolute',
+    position: "absolute",
     top: -8,
-    transform: [{ rotate: '-7deg' }],
+    transform: [{ rotate: "-7deg" }],
     width: 96,
   },
   label: {
     color: sketchTheme.colors.penBlue,
     fontSize: 15,
     letterSpacing: 1.2,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     ...(sketchTheme.fonts.body ? { fontFamily: sketchTheme.fonts.body } : null),
   },
   title: {
     color: sketchTheme.colors.ink,
     fontSize: 36,
     lineHeight: 42,
-    ...(sketchTheme.fonts.heading ? { fontFamily: sketchTheme.fonts.heading } : null),
+    ...(sketchTheme.fonts.heading
+      ? { fontFamily: sketchTheme.fonts.heading }
+      : null),
   },
   note: {
     color: sketchTheme.colors.ink,
@@ -454,21 +572,21 @@ const styles = StyleSheet.create({
     ...(sketchTheme.fonts.body ? { fontFamily: sketchTheme.fonts.body } : null),
   },
   metaRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
   },
   metaChip: {
-    backgroundColor: '#FFF4E8',
+    backgroundColor: "#FFF4E8",
     borderColor: sketchTheme.colors.ink,
-    borderStyle: 'dashed',
+    borderStyle: "dashed",
     borderWidth: 2,
     paddingHorizontal: 12,
     paddingVertical: 7,
     ...sketchTheme.radius.pill,
   },
   metaChipAlt: {
-    backgroundColor: '#EEF5FF',
+    backgroundColor: "#EEF5FF",
   },
   metaChipText: {
     color: sketchTheme.colors.ink,
@@ -476,14 +594,16 @@ const styles = StyleSheet.create({
     ...(sketchTheme.fonts.body ? { fontFamily: sketchTheme.fonts.body } : null),
   },
   feedbackCard: {
-    backgroundColor: '#FFF1D9',
+    backgroundColor: "#FFF1D9",
     gap: 6,
     padding: 16,
   },
   feedbackTitle: {
-    color: '#9A5A00',
+    color: "#9A5A00",
     fontSize: 18,
-    ...(sketchTheme.fonts.heading ? { fontFamily: sketchTheme.fonts.heading } : null),
+    ...(sketchTheme.fonts.heading
+      ? { fontFamily: sketchTheme.fonts.heading }
+      : null),
   },
   feedbackText: {
     color: sketchTheme.colors.ink,
@@ -493,7 +613,7 @@ const styles = StyleSheet.create({
   chatShell: {
     flex: 1,
     minHeight: 0,
-    position: 'relative',
+    position: "relative",
   },
   chatShellShadow: {
     ...StyleSheet.absoluteFillObject,
@@ -502,16 +622,16 @@ const styles = StyleSheet.create({
     ...sketchTheme.radius.card,
   },
   chatSurface: {
-    backgroundColor: '#FFF8EF',
+    backgroundColor: "#FFF8EF",
     borderColor: sketchTheme.colors.ink,
     borderWidth: sketchTheme.border.strong,
     flex: 1,
     minHeight: 0,
-    overflow: 'hidden',
+    overflow: "hidden",
     ...sketchTheme.radius.card,
   },
   messagesContainer: {
-    backgroundColor: '#FFF8EF',
+    backgroundColor: "#FFF8EF",
   },
   messageList: {
     paddingBottom: 12,
@@ -519,11 +639,11 @@ const styles = StyleSheet.create({
     paddingTop: 18,
   },
   toolbarWrap: {
-    marginBottom: 12,
-    marginHorizontal: 12,
-    marginTop: 8,
-    minHeight: 72,
-    position: 'relative',
+    marginBottom: 18,
+    marginHorizontal: 8,
+    marginTop: 4,
+    minHeight: 76,
+    position: "relative",
   },
   toolbarShadow: {
     ...StyleSheet.absoluteFillObject,
@@ -536,34 +656,34 @@ const styles = StyleSheet.create({
     borderColor: sketchTheme.colors.ink,
     borderTopWidth: sketchTheme.border.strong,
     borderWidth: sketchTheme.border.strong,
-    minHeight: 72,
-    paddingHorizontal: 10,
+    minHeight: 76,
+    paddingHorizontal: 12,
     paddingTop: 8,
     ...sketchTheme.radius.card,
   },
   toolbarPrimary: {
-    alignItems: 'center',
+    alignItems: "center",
   },
   composerText: {
     color: sketchTheme.colors.ink,
     fontSize: 16,
     lineHeight: 22,
-    marginTop: 8,
+    marginTop: 6,
     minHeight: 44,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingTop: 10,
   },
   sendContainer: {
-    justifyContent: 'center',
+    justifyContent: "center",
     marginBottom: 8,
     marginRight: 4,
   },
   sendButton: {
-    alignItems: 'center',
+    alignItems: "center",
     backgroundColor: sketchTheme.colors.accent,
     borderColor: sketchTheme.colors.ink,
     borderWidth: 2,
-    justifyContent: 'center',
+    justifyContent: "center",
     minWidth: 68,
     paddingHorizontal: 16,
     paddingVertical: 11,

@@ -7,4 +7,12 @@ module.exports = defineConfig([
   {
     ignores: ['dist/*'],
   },
+  {
+    files: ['tests/**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs', globals: { __dirname: 'readonly', Buffer: 'readonly' } },
+  },
+  {
+    files: ['tests/fixtures/*.mjs'],
+    languageOptions: { globals: { Bun: 'readonly' } },
+  },
 ]);

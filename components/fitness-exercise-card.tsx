@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { sketchTheme } from '@/constants/theme';
 import type { FitnessExerciseImageKey, FitnessPlanExercise } from '@/services/fitness-plan';
@@ -24,12 +24,14 @@ type FitnessExerciseCardProps = {
   exercise: FitnessPlanExercise;
   onAddSet: () => void;
   onToggleSet: (setId: string) => void;
+  onUpdateSet: (setId: string, field: 'kg' | 'reps', value: string) => void;
 };
 
 export function FitnessExerciseCard({
   exercise,
   onAddSet,
   onToggleSet,
+  onUpdateSet,
 }: FitnessExerciseCardProps) {
   const [expanded, setExpanded] = useState(false);
   const completedCount = exercise.sets.filter((setItem) => setItem.completed).length;
@@ -39,6 +41,9 @@ export function FitnessExerciseCard({
       <View pointerEvents="none" style={styles.shadow} />
       <View style={styles.card}>
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${exercise.name} ${expanded ? '收起详情' : '展开详情'}`}
+          accessibilityState={{ expanded }}
           onPress={() => setExpanded((current) => !current)}
           style={({ pressed }) => [styles.headerButton, pressed && styles.headerButtonPressed]}>
           <Image resizeMode="contain" source={EXERCISE_IMAGES[exercise.imageKey]} style={styles.image} />
@@ -71,43 +76,70 @@ export function FitnessExerciseCard({
             </Text>
 
             <View style={styles.tableHeader}>
-              <Text style={[styles.tableHeaderText, styles.setColumn]}>组数</Text>
-              <Text style={[styles.tableHeaderText, styles.metricColumn]}>kg</Text>
-              <Text style={[styles.tableHeaderText, styles.metricColumn]}>次</Text>
-              <Text style={[styles.tableHeaderText, styles.checkColumn]}>完成</Text>
+              <View style={[styles.headerCell, styles.setColumn]}>
+                <Text style={styles.tableHeaderText}>组数</Text>
+              </View>
+              <View style={[styles.headerCell, styles.metricColumn]}>
+                <Text style={[styles.tableHeaderText, styles.centerHeaderText]}>kg</Text>
+              </View>
+              <View style={[styles.headerCell, styles.metricColumn]}>
+                <Text style={[styles.tableHeaderText, styles.centerHeaderText]}>次</Text>
+              </View>
+              <View style={[styles.headerCell, styles.checkColumn]}>
+                <Text style={[styles.tableHeaderText, styles.centerHeaderText]}>完成</Text>
+              </View>
             </View>
 
             <View style={styles.setList}>
               {exercise.sets.map((setItem) => (
                 <View key={setItem.id} style={styles.setRow}>
                   <Text style={[styles.setCellText, styles.setColumn]}>第 {setItem.setNumber} 组</Text>
-                  <Text style={[styles.setCellText, styles.metricColumn]}>
-                    {setItem.kg || '--'}
-                  </Text>
-                  <Text style={[styles.setCellText, styles.metricColumn]}>
-                    {setItem.reps || '--'}
-                  </Text>
-                  <Pressable
-                    accessibilityRole="checkbox"
-                    accessibilityState={{ checked: setItem.completed }}
-                    onPress={() => onToggleSet(setItem.id)}
-                    style={[
-                      styles.checkButton,
-                      setItem.completed && styles.checkButtonCompleted,
-                    ]}>
-                    <Text
+                  <View style={[styles.metricCell, styles.metricColumn]}>
+                    <TextInput
+                      accessibilityLabel={`${exercise.name} 第 ${setItem.setNumber} 组重量`}
+                      keyboardType="decimal-pad"
+                      onChangeText={(value) => onUpdateSet(setItem.id, 'kg', value)}
+                      placeholder="kg"
+                      placeholderTextColor="#8C857A"
+                      style={styles.metricInput}
+                      value={setItem.kg}
+                    />
+                  </View>
+                  <View style={[styles.metricCell, styles.metricColumn]}>
+                    <TextInput
+                      accessibilityLabel={`${exercise.name} 第 ${setItem.setNumber} 组次数`}
+                      keyboardType="number-pad"
+                      onChangeText={(value) => onUpdateSet(setItem.id, 'reps', value)}
+                      placeholder="次数"
+                      placeholderTextColor="#8C857A"
+                      style={styles.metricInput}
+                      value={setItem.reps}
+                    />
+                  </View>
+                  <View style={[styles.checkCell, styles.checkColumn]}>
+                    <Pressable
+                      accessibilityRole="checkbox"
+                      accessibilityLabel={`${exercise.name} 第 ${setItem.setNumber} 组完成`}
+                      accessibilityState={{ checked: setItem.completed }}
+                      onPress={() => onToggleSet(setItem.id)}
                       style={[
-                        styles.checkButtonText,
-                        setItem.completed && styles.checkButtonTextCompleted,
+                        styles.checkButton,
+                        setItem.completed && styles.checkButtonCompleted,
                       ]}>
-                      {setItem.completed ? '✓' : ''}
-                    </Text>
-                  </Pressable>
+                      <Text
+                        style={[
+                          styles.checkButtonText,
+                          setItem.completed && styles.checkButtonTextCompleted,
+                        ]}>
+                        {setItem.completed ? '✓' : ''}
+                      </Text>
+                    </Pressable>
+                  </View>
                 </View>
               ))}
             </View>
 
-            <Pressable onPress={onAddSet} style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}>
+            <Pressable accessibilityRole="button" onPress={onAddSet} style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}>
               <Text style={styles.addButtonText}>新增一组</Text>
             </Pressable>
           </View>
@@ -226,12 +258,18 @@ const styles = StyleSheet.create({
   },
   tableHeader: {
     flexDirection: 'row',
-    paddingHorizontal: 4,
+    paddingHorizontal: 12,
+  },
+  headerCell: {
+    justifyContent: 'center',
   },
   tableHeaderText: {
     color: '#7B6D59',
     fontSize: 13,
     ...(sketchTheme.fonts.body ? { fontFamily: sketchTheme.fonts.body } : null),
+  },
+  centerHeaderText: {
+    textAlign: 'center',
   },
   setList: {
     gap: 8,
@@ -250,6 +288,26 @@ const styles = StyleSheet.create({
     color: sketchTheme.colors.ink,
     fontSize: 15,
   },
+  metricCell: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkCell: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  metricInput: {
+    backgroundColor: 'transparent',
+    color: sketchTheme.colors.ink,
+    fontSize: 15,
+    height: 20,
+    lineHeight: 18,
+    minWidth: 32,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    textAlign: 'center',
+    width: 36,
+  },
   setColumn: {
     flex: 1.3,
   },
@@ -258,7 +316,6 @@ const styles = StyleSheet.create({
   },
   checkColumn: {
     flex: 0.65,
-    textAlign: 'right',
   },
   checkButton: {
     alignItems: 'center',

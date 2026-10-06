@@ -14,37 +14,69 @@ import { sketchTheme } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 
 export default function ProfileScreen() {
-  const { isAuthenticated, isHydrating, signIn, signOut } = useAuth();
+  const { isAuthenticated, isHydrating, sessionError, signIn, signOut, signUp } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeAction, setActiveAction] = useState<'login' | 'logout' | 'register' | null>(null);
+
+  const isSubmitting = activeAction !== null;
+  const areControlsDisabled = isSubmitting || isHydrating;
 
   async function handleLogin() {
-    if (!username.trim() || !password.trim()) {
-      setFeedback('请输入账号和密码。');
+    const trimmedUsername = username.trim();
+    const validationMessage = validateCredentials(trimmedUsername, password);
+
+    if (validationMessage) {
+      setFeedback(validationMessage);
       return;
     }
 
-    setIsSubmitting(true);
+    setActiveAction('login');
     setFeedback(null);
 
     try {
       await signIn({
         password,
-        username: username.trim(),
+        username: trimmedUsername,
       });
       setPassword('');
       setFeedback('登录成功。');
     } catch (error) {
       setFeedback(getErrorMessage(error));
     } finally {
-      setIsSubmitting(false);
+      setActiveAction(null);
+    }
+  }
+
+  async function handleRegister() {
+    const trimmedUsername = username.trim();
+    const validationMessage = validateCredentials(trimmedUsername, password);
+
+    if (validationMessage) {
+      setFeedback(validationMessage);
+      return;
+    }
+
+    setActiveAction('register');
+    setFeedback(null);
+
+    try {
+      await signUp({
+        password,
+        username: trimmedUsername,
+      });
+      setPassword('');
+      setFeedback('注册成功，已自动登录。');
+    } catch (error) {
+      setFeedback(getErrorMessage(error));
+    } finally {
+      setActiveAction(null);
     }
   }
 
   async function handleLogout() {
-    setIsSubmitting(true);
+    setActiveAction('logout');
     setFeedback(null);
 
     try {
@@ -53,7 +85,7 @@ export default function ProfileScreen() {
     } catch (error) {
       setFeedback(getErrorMessage(error));
     } finally {
-      setIsSubmitting(false);
+      setActiveAction(null);
     }
   }
 
@@ -81,6 +113,7 @@ export default function ProfileScreen() {
           </Text>
           <Text style={styles.metaText}>登录后会自动保存状态，下次打开也能继续使用。</Text>
           <Text style={styles.metaText}>生成的训练建议会自动同步到训练页。</Text>
+          {sessionError ? <Text style={styles.feedbackText}>{sessionError}</Text> : null}
         </View>
 
         <View style={[styles.card, styles.formCard]}>
@@ -93,7 +126,8 @@ export default function ProfileScreen() {
               </Text>
 
               <Pressable
-                disabled={isSubmitting}
+                accessibilityRole="button"
+                disabled={areControlsDisabled}
                 onPress={handleLogout}
                 style={({ pressed }) => [
                   styles.button,
@@ -112,10 +146,12 @@ export default function ProfileScreen() {
             <>
               <Text style={styles.inputLabel}>账号</Text>
               <TextInput
+                accessibilityLabel="账号"
                 autoCapitalize="none"
-                editable={!isSubmitting}
+                autoCorrect={false}
+                editable={!areControlsDisabled}
                 onChangeText={setUsername}
-                placeholder="输入账号"
+                placeholder="3–32 位字母、数字、_ 或 -"
                 placeholderTextColor="#8C857A"
                 style={styles.input}
                 value={username}
@@ -123,29 +159,52 @@ export default function ProfileScreen() {
 
               <Text style={styles.inputLabel}>密码</Text>
               <TextInput
-                editable={!isSubmitting}
+                accessibilityLabel="密码"
+                editable={!areControlsDisabled}
                 onChangeText={setPassword}
-                placeholder="输入密码"
+                placeholder="输入密码，8–72 位"
                 placeholderTextColor="#8C857A"
                 secureTextEntry
                 style={styles.input}
                 value={password}
               />
 
-              <Pressable
-                disabled={isSubmitting}
-                onPress={handleLogin}
-                style={({ pressed }) => [
-                  styles.button,
-                  pressed && styles.buttonPressed,
-                  isSubmitting && styles.buttonDisabled,
-                ]}>
-                {isSubmitting ? (
-                  <ActivityIndicator color={sketchTheme.colors.white} />
-                ) : (
-                  <Text style={styles.buttonText}>登录并继续</Text>
-                )}
-              </Pressable>
+              <View style={styles.actionsRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={areControlsDisabled}
+                  onPress={handleLogin}
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.compactButton,
+                    pressed && styles.buttonPressed,
+                    isSubmitting && styles.buttonDisabled,
+                  ]}>
+                  {activeAction === 'login' ? (
+                    <ActivityIndicator color={sketchTheme.colors.white} />
+                  ) : (
+                    <Text style={styles.buttonText}>登录</Text>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={areControlsDisabled}
+                  onPress={handleRegister}
+                  style={({ pressed }) => [
+                    styles.button,
+                    styles.compactButton,
+                    styles.secondaryButton,
+                    pressed && styles.buttonPressed,
+                    isSubmitting && styles.buttonDisabled,
+                  ]}>
+                  {activeAction === 'register' ? (
+                    <ActivityIndicator color={sketchTheme.colors.ink} />
+                  ) : (
+                    <Text style={styles.secondaryButtonText}>注册</Text>
+                  )}
+                </Pressable>
+              </View>
             </>
           )}
 
@@ -162,6 +221,30 @@ export default function ProfileScreen() {
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '发生未知错误，请稍后再试。';
+}
+
+function validateCredentials(username: string, password: string): string | null {
+  if (!username || !password) {
+    return '请输入账号和密码。';
+  }
+
+  if (username.length < 3 || username.length > 32) {
+    return '账号长度需要为 3–32 位。';
+  }
+
+  if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+    return '账号只能包含英文字母、数字、下划线（_）和连字符（-）。';
+  }
+
+  if (password.length < 8) {
+    return '密码至少需要 8 位。';
+  }
+
+  if (password.length > 72) {
+    return '密码最多支持 72 位。';
+  }
+
+  return null;
 }
 
 const styles = StyleSheet.create({
@@ -330,6 +413,11 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     ...sketchTheme.radius.note,
   },
+  actionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 8,
+  },
   button: {
     alignItems: 'center',
     backgroundColor: sketchTheme.colors.accent,
@@ -341,6 +429,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     ...sketchTheme.radius.pill,
+  },
+  compactButton: {
+    flex: 1,
+    marginTop: 0,
   },
   secondaryButton: {
     backgroundColor: sketchTheme.colors.white,

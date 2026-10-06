@@ -18,7 +18,13 @@ export function useCamera() {
   const requestPermission = async () => {
     setErrorMessage(null);
 
-    const response = await requestPermissionAsync();
+    let response;
+    try {
+      response = await requestPermissionAsync();
+    } catch {
+      setErrorMessage('无法申请相机权限，请检查浏览器或系统设置后重试。');
+      return false;
+    }
 
     if (!response.granted) {
       setErrorMessage(
@@ -48,10 +54,11 @@ export function useCamera() {
 
   const clearPhoto = () => {
     setLastPhoto(null);
+    if (lastPhoto) setIsCameraReady(false);
     setErrorMessage(null);
   };
 
-  const takePhoto = async () => {
+  const takePhoto = async (shouldAccept: () => boolean = () => true) => {
     if (!permission?.granted) {
       const granted = await requestPermission();
 
@@ -83,9 +90,15 @@ export function useCamera() {
         skipProcessing: false,
       });
 
+      if (!shouldAccept()) {
+        return null;
+      }
       setLastPhoto(photo);
       return photo;
     } catch (error) {
+      if (!shouldAccept()) {
+        return null;
+      }
       const message = error instanceof Error ? error.message : '拍照失败，请重试。';
       setErrorMessage(message);
       return null;

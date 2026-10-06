@@ -1,0 +1,71 @@
+diff --git a/src/Composer.tsx b/src/Composer.tsx
+index 57ba13a84535e9725ed5457fd0d3b0fdfb0c71ae..be120b789e9c0639dc269c3abd4a13a51e6386c1 100644
+--- a/src/Composer.tsx
++++ b/src/Composer.tsx
+@@ -5,6 +5,7 @@ import {
+   TextInputChangeEvent,
+   TextInputContentSizeChangeEvent,
+   TextInputProps,
++  type TextStyle,
+   View,
+ } from 'react-native'
+ import { TextInput } from 'react-native-gesture-handler'
+@@ -92,7 +93,7 @@ const styles = StyleSheet.create({
+   },
+ })
+ 
+-const stylesWeb = StyleSheet.create({
++const stylesWeb = StyleSheet.create<{ textInput: TextStyle }>({
+   textInput: {
+     /* @ts-expect-error - web-specific styles */
+     outlineStyle: 'none',
+diff --git a/src/GiftedChat/index.tsx b/src/GiftedChat/index.tsx
+index 2858b6c40acaba016598cbb4b1be2e9755948848..566336d3d51184cbb0532ced15841e68c284575c 100644
+--- a/src/GiftedChat/index.tsx
++++ b/src/GiftedChat/index.tsx
+@@ -326,7 +326,6 @@ function GiftedChat<TMessage extends IMessage = IMessage> (
+           style={[stylesCommon.fill, styles.contentContainer]}
+           onLayout={onInitialLayoutViewLayout}
+         >
+-          {/* @ts-expect-error */}
+           <KeyboardAvoidingView
+             behavior='translate-with-padding'
+             keyboardVerticalOffset={insets.top}
+diff --git a/src/styles.ts b/src/styles.ts
+index d47e585da30effcf65967bf298243eceec492044..78887fea4b522fb2979412d7cfd8c95a22f59161 100644
+--- a/src/styles.ts
++++ b/src/styles.ts
+@@ -1,4 +1,4 @@
+-import { StyleProp, StyleSheet, TextStyle, ViewStyle } from 'react-native'
++import { StyleSheet } from 'react-native'
+ 
+ export default StyleSheet.create({
+   fill: {
+@@ -10,16 +10,22 @@ export default StyleSheet.create({
+   },
+ })
+ 
+-export function getColorSchemeStyle<T>(styles: T, baseName: string, colorScheme?: string | null) {
++export function getColorSchemeStyle<T, K extends keyof T & string>(styles: T, baseName: K, colorScheme?: string | null): T[K][] {
+   const key = `${baseName}_${colorScheme}` as keyof T
+-  return [styles[baseName as keyof T], styles[key]]
++  return [styles[baseName], styles[key] as T[K]]
+ }
+ 
+-export function getStyleWithPosition<T>(styles: T, baseName: string, position?: 'left' | 'right' | null) {
+-  const stylesArray = [styles[baseName as keyof T]]
++type PositionStyle<T, K extends string> = K extends keyof T
++  ? T[K]
++  : `${K}_left` extends keyof T
++    ? T[`${K}_left`]
++    : `${K}_right` extends keyof T ? T[`${K}_right`] : never
++
++export function getStyleWithPosition<T, K extends string>(styles: T, baseName: K, position?: 'left' | 'right' | null): PositionStyle<T, K> {
++  const stylesArray = [styles[baseName as unknown as keyof T]]
+   if (position) {
+     const key = `${baseName}_${position}` as keyof T
+     stylesArray.push(styles[key])
+   }
+-  return StyleSheet.flatten(stylesArray) as StyleProp<ViewStyle> | StyleProp<TextStyle>
++  return StyleSheet.flatten(stylesArray) as PositionStyle<T, K>
+ }

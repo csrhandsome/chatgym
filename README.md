@@ -1,50 +1,57 @@
-# Welcome to your Expo app 👋
+# ChatGym
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+当前页面逐项验收、最终计数和验证边界见 [当前页面功能验收](docs/current-page-feature-audit.md)。[功能测试报告](docs/frontend-functional-test-report.md) 和 [架构与工具调用展示审计](docs/architecture-and-agent-audit.md) 保留历史结果。后端使用自托管 Mem0 OSS 与 Qdrant，启动配置和旧记忆迁移见 [后端 Mem0 说明](../chatgym_server/docs/mem0.md)。
 
-## Get started
-
-1. Install dependencies
-
-   ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+默认开发配置：先按后端说明配置服务，在 `../chatgym_server` 执行 `bun run dev`（默认 API 端口 3000），再在本目录执行 `pnpm web`。前端未设置 `EXPO_PUBLIC_API_BASE_URL` 时也使用 3000：Web/iOS 本机回退为 `127.0.0.1`，Android 模拟器回退为 `10.0.2.2`，Expo 提供开发机地址时使用该地址。真机可将 `.env.example` 复制为 `.env`，把 API 地址改为开发机局域网 IP；自定义后端 `PORT` 时同时更新该 API 地址，并重启 Expo。Expo 页面端口与 API 端口独立。
 
 ```bash
-npm run reset-project
+pnpm test:frontend
+pnpm test:login # 需要相邻 chatgym_server、Bun 和本机监听权限
+pnpm check # lint + typecheck + 前端测试 + 真实登录测试
+pnpm lint
+pnpm exec tsc --noEmit
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+ChatGym 是一个结合 AI 对话、训练计划整理和饮食拍照识别的健身助手应用。项目基于 Expo Router 构建，当前以移动端体验为主，围绕“聊天制定计划 + 页面落地执行 + 拍照辅助记录”这条主线展开。
 
-## Learn more
+## 功能简介
 
-To learn more about developing your project with Expo, look at the following resources:
+### 1. AI 健身聊天
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+- 用户可以在聊天页直接描述自己的训练目标、身体情况或想解决的问题。
+- Agent 会返回分步骤的回复内容，包括思路整理、工具处理结果和最终建议。
+- 当回复中包含结构化训练计划时，应用会自动提取并保存下来，供训练页直接使用。
 
-## Join the community
+### 2. 训练计划同步
 
-Join our community of developers creating universal apps.
+- 聊天里生成的训练安排会自动同步到训练页，不需要手动复制。
+- 训练页会展示计划标题、摘要、动作列表和训练提醒。
+- 每个动作都带有组数、重量、次数等信息，便于直接照着执行。
+- 用户可以勾选某一组是否完成，也可以在现有动作下继续追加新的训练组。
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+### 3. 食物拍照识别热量
+
+- 拍照页支持直接调用设备相机拍摄食物。
+- 拍照后会自动把图片发送到视觉分析接口，优先识别是否为食物并估算热量。
+- 页面会展示识别状态、简要结论和热量结果，方便做基础饮食记录。
+- 支持重拍和失败后的重新上传。
+
+### 4. 登录与状态保留
+
+- 个人页支持账号密码登录。
+- 登录状态会保存在本地，下次打开应用时可以自动恢复。
+- 登录后可以持续使用训练问答和计划同步能力，不需要每次重新进入流程。
+
+## 页面结构
+
+- `拍照`：拍摄食物并获取热量估算。
+- `聊天`：和 AI 健身助手对话，获取建议或生成训练计划。
+- `训练`：查看、执行并更新最近一次保存的训练计划。
+- `我的`：登录、退出登录和查看当前账户状态。
+
+## 项目特点
+
+- 把自然语言健身咨询和结构化训练计划串在一起，减少“聊完还要自己整理”的步骤。
+- 支持将 Agent 返回的复杂数据归一化成适合移动端展示的消息和计划卡片。
+- 同时覆盖训练和饮食两个高频场景，让记录链路更完整。
+- 整体界面采用手绘便签风格，重点突出轻量、直观和可执行。

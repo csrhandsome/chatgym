@@ -1,12 +1,13 @@
+import { createApiConnectionError, getApiBaseUrl } from '@/services/api-config';
+import { BackendApiError } from '@/services/backend-api';
 import { extractFitnessPlan, type FitnessPlan } from '@/services/fitness-plan';
-
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
-const PLAN_API_PATH = normalizeApiPath(process.env.EXPO_PUBLIC_PLAN_API_PATH) ?? '/api/agent/plan';
+const PLAN_API_PATH = normalizeApiPath(process.env.EXPO_PUBLIC_PLAN_API_PATH) ?? '/api/agent/plan/stream';
 const VLM_API_PATH =
   normalizeApiPath(process.env.EXPO_PUBLIC_VLM_API_PATH) ?? '/api/agent/vlm/analyze';
 
 export const AGENT_PLAN_API_PATH_LABEL = PLAN_API_PATH;
 export const AGENT_VLM_API_PATH_LABEL = VLM_API_PATH;
+export const MAX_CHAT_MESSAGE_LENGTH = 2000;
 
 export type ChatMessageKind = 'answer' | 'thought' | 'tool';
 
@@ -18,11 +19,14 @@ export type ChatHistoryItem = {
 };
 
 export type ChatResponseChunk = {
+  eventId?: string;
   fitnessPlan?: FitnessPlan;
   id: string;
   kind: ChatMessageKind;
   text: string;
   title?: string;
+  toolCallId?: string;
+  status?: 'running' | 'completed' | 'failed';
 };
 
 export type AgentEventType = 'thinking' | 'tool_call' | 'tool_result' | 'text' | 'final' | 'error';
@@ -39,6 +43,8 @@ export type AgentConsoleEvent = {
   text?: string;
   timestamp?: string;
   toolName?: string;
+  toolCallId?: string;
+  success?: boolean;
   type: AgentEventType;
 };
 
@@ -78,11 +84,13 @@ type ChatChunkListener = (chunk: ChatResponseChunk) => void;
 
 type RequestAgentPayloadOptions = {
   onEvent?: (event: AgentConsoleEvent) => void;
+  signal?: AbortSignal;
   token?: string | null;
 };
 
 type SendAgentMessageOptions = {
   onChunk?: ChatChunkListener;
+  signal?: AbortSignal;
 };
 
 export async function sendAgentMessage(
@@ -95,6 +103,7 @@ export async function sendAgentMessage(
 ): Promise<SendAgentMessageResult> {
   const streamedChunks: ChatResponseChunk[] = [];
   const streamedChunkKeys = new Set<string>();
+  let eventNumber = 0;
 
   const result = await requestAgentPayload(PLAN_API_PATH, createAgentPlanPayload(input), {
     onEvent(event) {
@@ -102,7 +111,7 @@ export async function sendAgentMessage(
         return;
       }
 
-      const nextChunks = buildChatChunksFromPayload(event, event.id ?? `event-${Date.now()}`);
+      const nextChunks = buildChatChunksFromPayload(event, `${event.id ?? 'event'}-${Date.now()}-${eventNumber++}`);
       const uniqueChunks = getUniqueChunks(nextChunks, streamedChunkKeys);
 
       if (uniqueChunks.length === 0) {
@@ -115,11 +124,36 @@ export async function sendAgentMessage(
         options.onChunk(chunk);
       }
     },
+    signal: options.signal,
     token,
   });
 
   const normalizedChunks = buildChatChunksFromPayload(result.payload, `chat-${Date.now()}`);
   const chunks = normalizedChunks.length > 0 ? normalizedChunks : streamedChunks;
+
+  // JSON responses can carry the same execution errors as SSE. Keep their
+  // process cards visible, but never let an error response persist a plan.
+  const failure = result.events.find((event) => event.type === 'error');
+  if (failure) {
+    for (const chunk of chunks) options.onChunk?.(chunk);
+    throw new Error(failure.summary || 'Agent 执行失败，请稍后再试。');
+  }
+  const finalEvent = [...result.events].reverse().find((event) => event.type === 'final');
+  if (finalEvent?.finishReason && ['error', 'length', 'content-filter', 'content_filter'].includes(finalEvent.finishReason)) {
+    if (result.delivery === 'json') for (const chunk of chunks) options.onChunk?.(chunk);
+    throw new Error(`Agent 尚未正常完成（${finalEvent.finishReason}），请重试。`);
+  }
+  const completedPayload = isRecord(result.payload) && Object.hasOwn(result.payload, 'plan')
+    ? result.payload : isRecord(finalEvent?.output) ? finalEvent.output : undefined;
+  const invalidPlan = completedPayload && Object.hasOwn(completedPayload, 'plan') &&
+    !extractFitnessPlan(completedPayload.plan);
+  const failedReview = isRecord(completedPayload?.review) && completedPayload.review.status === 'needs-repair';
+  if (invalidPlan || failedReview) {
+    if (result.delivery === 'json') for (const chunk of chunks) options.onChunk?.(chunk);
+    throw new Error(invalidPlan
+      ? 'Agent 返回的训练计划没有有效动作，未同步到 Fitness 页，请重试。'
+      : '训练计划未通过审核，未同步到 Fitness 页，请重新生成。');
+  }
 
   if (chunks.length === 0) {
     throw new Error('Agent 已返回响应，但没有解析出可展示的步骤。');
@@ -138,6 +172,7 @@ export async function analyzeFitnessImages(
 ): Promise<AgentPayloadResult> {
   return await requestAgentPayload(VLM_API_PATH, request, {
     onEvent: options.onEvent,
+    signal: options.signal,
     token,
   });
 }
@@ -147,29 +182,44 @@ async function requestAgentPayload(
   body: Record<string, unknown>,
   options: RequestAgentPayloadOptions = {}
 ): Promise<AgentPayloadResult> {
-  const response = await fetch(`${getApiBaseUrl()}${path}`, {
-    body: JSON.stringify(body),
-    headers: {
-      Accept: 'text/event-stream, application/json',
-      ...(options.token
-        ? {
-            Authorization: `Bearer ${options.token}`,
-          }
-        : null),
-      'Content-Type': 'application/json',
-    },
-    method: 'POST',
-  });
+  let response: Response;
+
+  try {
+    throwIfAborted(options.signal);
+    response = await fetch(`${getApiBaseUrl()}${path}`, {
+      body: JSON.stringify(body),
+      headers: {
+        Accept: 'text/event-stream, application/json',
+        ...(options.token
+          ? {
+              Authorization: `Bearer ${options.token}`,
+            }
+          : null),
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (options.signal?.aborted) throw createAbortError();
+    throw createApiConnectionError(path, error);
+  }
+  throwIfAborted(options.signal);
 
   if (!response.ok) {
     const payload = await parseResponseBody(response);
-    throw new Error(extractMessage(payload) ?? `请求失败 (${response.status})`);
+    const message = response.status === 401
+      ? '登录状态已失效，请重新登录。'
+      : response.status === 403
+        ? '当前账号暂时无法执行这个操作。'
+        : extractMessage(payload) ?? `请求失败 (${response.status})`;
+    throw new BackendApiError(message, response.status);
   }
 
   const contentType = response.headers.get('content-type') ?? '';
 
   if (contentType.includes('text/event-stream')) {
-    const streamed = await parseAgentSseResponse(response, options.onEvent);
+    const streamed = await parseAgentSseResponse(response, options.onEvent, options.signal);
 
     return {
       delivery: 'stream',
@@ -179,27 +229,41 @@ async function requestAgentPayload(
   }
 
   const payload = await parseResponseBody(response);
+  throwIfAborted(options.signal);
 
   return {
     delivery: 'json',
-    events: extractAgentEvents(payload),
+    events: extractResponseEvents(payload),
     payload,
   };
 }
 
 async function parseAgentSseResponse(
   response: Response,
-  onEvent?: (event: AgentConsoleEvent) => void
+  onEvent?: (event: AgentConsoleEvent) => void,
+  signal?: AbortSignal,
 ): Promise<{ events: AgentConsoleEvent[]; payload: unknown }> {
   const events: AgentConsoleEvent[] = [];
   let finalPayload: unknown = null;
+  let completed = false;
 
   const handleEvent = (event: AgentConsoleEvent) => {
+    throwIfAborted(signal);
     events.push(event);
     onEvent?.(event);
 
-    if (event.type === 'final' && event.output !== undefined) {
-      finalPayload = event.output;
+    if (event.type === 'error') {
+      throw new Error(event.summary || 'Agent 执行失败，请稍后再试。');
+    }
+
+    if (event.type === 'final') {
+      if (event.finishReason && ['error', 'length', 'content-filter', 'content_filter'].includes(event.finishReason)) {
+        throw new Error(`Agent 尚未正常完成（${event.finishReason}），请重试。`);
+      }
+      completed = true;
+      if (event.output !== undefined) {
+        finalPayload = event.output;
+      }
     }
   };
 
@@ -207,23 +271,42 @@ async function parseAgentSseResponse(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    const abort = () => { void reader.cancel().catch(() => undefined); };
+    signal?.addEventListener('abort', abort, { once: true });
 
-    while (true) {
-      const { done, value } = await reader.read();
+    try {
+      throwIfAborted(signal);
+      while (true) {
+        const { done, value } = await reader.read();
+        throwIfAborted(signal);
 
-      if (done) {
-        buffer += decoder.decode();
-        break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        buffer = drainSseBuffer(buffer, handleEvent);
       }
 
-      buffer += decoder.decode(value, { stream: true });
-      buffer = drainSseBuffer(buffer, handleEvent);
+      drainSseBuffer(`${buffer}\n\n`, handleEvent);
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      reader.releaseLock();
     }
-
-    drainSseBuffer(`${buffer}\n\n`, handleEvent);
   } else {
     const text = await response.text();
+    throwIfAborted(signal);
     drainSseBuffer(`${text}\n\n`, handleEvent);
+  }
+
+  // Both our backend's final event and SDK finish/[DONE] explicitly end a response.
+  // Closing the transport alone must never turn a partial plan into success.
+  if (!completed) {
+    throw new Error('Agent 响应中断，尚未完成，请重试。');
   }
 
   return {
@@ -286,9 +369,17 @@ function parseSseBlock(block: string): AgentConsoleEvent | null {
 
   const rawPayload = dataLines.join('\n');
 
+  if (rawPayload.trim() === '[DONE]') {
+    return { type: 'final', summary: '' };
+  }
+
+  let payload: unknown;
   try {
-    return normalizeAgentEvent(JSON.parse(rawPayload) as unknown, eventType);
+    payload = JSON.parse(rawPayload) as unknown;
   } catch {
+    if (/^[\[{]/.test(rawPayload.trim())) {
+      throw new Error('Agent 返回的数据格式无效，请重试。');
+    }
     return normalizeAgentEvent(
       {
         summary: rawPayload.trim(),
@@ -298,6 +389,7 @@ function parseSseBlock(block: string): AgentConsoleEvent | null {
       eventType
     );
   }
+  return normalizeAgentEvent(payload, eventType);
 }
 
 function buildChatChunksFromPayload(payload: unknown, prefix: string): ChatResponseChunk[] {
@@ -392,6 +484,7 @@ function collectChatChunksFromAgentEvent(
     case 'thinking':
       return [
         {
+          eventId: event.id,
           kind: 'thought',
           text: event.text?.trim() || event.summary.trim(),
           title: buildEventTitle('Agent 思考', event, prefix),
@@ -400,7 +493,10 @@ function collectChatChunksFromAgentEvent(
     case 'tool_call':
       return [
         {
+          eventId: event.id,
           kind: 'tool',
+          status: 'running',
+          toolCallId: event.toolCallId,
           text: formatEventSections([
             ['说明', event.summary],
             ['输入', event.input],
@@ -411,12 +507,15 @@ function collectChatChunksFromAgentEvent(
     case 'tool_result':
       return [
         {
-          fitnessPlan:
+          eventId: event.id,
+          fitnessPlan: event.success === false ? undefined :
             extractFitnessPlan(event.output, {
               fallbackTitle: event.toolName,
               sourceTitle: event.toolName,
             }) ?? undefined,
           kind: 'tool',
+          status: event.success === false ? 'failed' : 'completed',
+          toolCallId: event.toolCallId,
           text: formatEventSections([
             ['说明', event.summary],
             ['输出', event.output],
@@ -427,6 +526,7 @@ function collectChatChunksFromAgentEvent(
     case 'text':
       return [
         {
+          eventId: event.id,
           kind: 'answer',
           text: event.text?.trim() || event.summary.trim(),
           title: buildEventTitle('模型输出', event, prefix),
@@ -435,7 +535,10 @@ function collectChatChunksFromAgentEvent(
     case 'error':
       return [
         {
+          eventId: event.id,
           kind: 'tool',
+          status: 'failed',
+          toolCallId: event.toolCallId,
           text: formatEventSections([
             ['错误', event.summary],
             ['详情', event.output],
@@ -506,6 +609,8 @@ function collectChatChunksFromAgentStep(
 
       chunks.push({
         kind: 'tool',
+        status: 'running',
+        toolCallId: coerceText(toolCall.toolCallId) ?? undefined,
         text: formatEventSections([
           ['说明', `调用工具 ${coerceText(toolCall.name) || 'unknown'}`],
           ['输入', toolCall.input],
@@ -522,7 +627,13 @@ function collectChatChunksFromAgentStep(
       }
 
       chunks.push({
+        fitnessPlan: toolResult.success === false ? undefined : extractFitnessPlan(toolResult.output ?? toolResult.summary, {
+          fallbackTitle: coerceText(toolResult.name) ?? undefined,
+          sourceTitle: coerceText(toolResult.name) ?? undefined,
+        }) ?? undefined,
         kind: 'tool',
+        status: toolResult.success === false ? 'failed' : 'completed',
+        toolCallId: coerceText(toolResult.toolCallId) ?? undefined,
         text: formatEventSections([
           ['说明', coerceText(toolResult.summary) || '工具执行完成'],
           ['输出', toolResult.output ?? toolResult.summary],
@@ -558,6 +669,7 @@ function createPlanChunk(planRecord: Record<string, unknown>): Omit<ChatResponse
   return {
     fitnessPlan: plan,
     kind: 'tool',
+    status: 'completed',
     text: summary,
     title: plan.title,
   };
@@ -612,7 +724,7 @@ function dedupeChatChunks(
   const deduped: Array<Omit<ChatResponseChunk, 'id'>> = [];
 
   for (const chunk of chunks) {
-    const key = `${chunk.kind}:${chunk.title ?? ''}:${chunk.text.trim()}`;
+    const key = chatChunkKey(chunk);
 
     if (!chunk.text.trim() || seen.has(key)) {
       continue;
@@ -632,7 +744,7 @@ function getUniqueChunks(chunks: ChatResponseChunk[], seen: Set<string>): ChatRe
   const uniqueChunks: ChatResponseChunk[] = [];
 
   for (const chunk of chunks) {
-    const key = `${chunk.kind}:${chunk.title ?? ''}:${chunk.text.trim()}`;
+    const key = chatChunkKey(chunk);
 
     if (seen.has(key)) {
       continue;
@@ -643,6 +755,24 @@ function getUniqueChunks(chunks: ChatResponseChunk[], seen: Set<string>): ChatRe
   }
 
   return uniqueChunks;
+}
+
+function chatChunkKey(chunk: Omit<ChatResponseChunk, 'id'>): string {
+  // The backend repeats the full dialog answer in final.output.answer after
+  // its text event. Display that answer once per request, not once per wrapper.
+  if (chunk.kind === 'answer') return `answer:${chunk.text.trim()}`;
+  const identity = chunk.toolCallId ?? chunk.eventId ?? '';
+  // Two plans may have identical summaries but different prescribed exercises.
+  // Ignore generated IDs when comparing their actual contents.
+  const planContent = chunk.fitnessPlan ? JSON.stringify({
+    title: chunk.fitnessPlan.title,
+    notes: chunk.fitnessPlan.notes,
+    exercises: chunk.fitnessPlan.exercises.map((exercise) => ({
+      name: exercise.name, description: exercise.description,
+      sets: exercise.sets.map((set) => ({ kg: set.kg, reps: set.reps })),
+    })),
+  }) : '';
+  return `${identity}:${chunk.kind}:${chunk.status ?? ''}:${chunk.title ?? ''}:${chunk.text.trim()}:${planContent}`;
 }
 
 function buildEventTitle(
@@ -671,6 +801,19 @@ function extractAgentEvents(payload: unknown): AgentConsoleEvent[] {
     .filter((item): item is AgentConsoleEvent => Boolean(item));
 }
 
+function extractResponseEvents(payload: unknown): AgentConsoleEvent[] {
+  if (Array.isArray(payload)) return payload.flatMap(extractResponseEvents);
+  if (!isRecord(payload)) return [];
+  const direct = normalizeAgentEvent(payload);
+  if (direct) return [direct];
+  if (Array.isArray(payload.agentEvents)) return extractAgentEvents(payload);
+  if (Array.isArray(payload.agentSteps)) {
+    return payload.agentSteps.flatMap((step) => isRecord(step)
+      ? extractResponseEvents(step.events ?? step) : []);
+  }
+  return [];
+}
+
 function normalizeAgentEvent(value: unknown, fallbackType?: string): AgentConsoleEvent | null {
   if (!isRecord(value)) {
     return null;
@@ -681,20 +824,18 @@ function normalizeAgentEvent(value: unknown, fallbackType?: string): AgentConsol
     coerceText(value.summary) ??
     coerceText(value.text) ??
     coerceText(value.message) ??
-    `Agent ${type ?? 'event'}`;
+    coerceText(value.errorText) ??
+    (type === 'final' ? '' : `Agent ${type ?? 'event'}`);
 
-  if (!type || !summary) {
+  if (!type) {
     return null;
   }
 
   return {
     finishReason: coerceText(value.finishReason) ?? undefined,
     id: coerceText(value.id) ?? undefined,
-    input:
-      isRecord(value.input) && Object.keys(value.input).length > 0
-        ? value.input
-        : undefined,
-    output: value.output,
+    input: normalizeToolInput(value.input ?? value.arguments),
+    output: value.output ?? value.result,
     requestId: coerceText(value.requestId) ?? undefined,
     stage: coerceText(value.stage) ?? undefined,
     stepNumber:
@@ -704,9 +845,22 @@ function normalizeAgentEvent(value: unknown, fallbackType?: string): AgentConsol
     summary,
     text: coerceText(value.text) ?? undefined,
     timestamp: coerceText(value.timestamp) ?? undefined,
-    toolName: coerceText(value.toolName) ?? undefined,
+    toolName: coerceText(value.toolName) ?? coerceText(value.name) ?? undefined,
+    toolCallId: coerceText(value.toolCallId) ?? coerceText(value.call_id) ?? undefined,
+    success: typeof value.success === 'boolean' ? value.success : undefined,
     type,
   };
+}
+
+function normalizeToolInput(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return { arguments: value };
+    }
+  }
+  return isRecord(value) ? value : undefined;
 }
 
 function normalizeEventType(value: unknown): AgentEventType | null {
@@ -715,6 +869,19 @@ function normalizeEventType(value: unknown): AgentEventType | null {
   }
 
   const normalized = value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+  if (normalized === 'function_call' || normalized === 'tool_input_available') {
+    return 'tool_call';
+  }
+  if (normalized === 'function_call_output' || normalized === 'tool_output_available') {
+    return 'tool_result';
+  }
+  if (normalized === 'tool_output_error') {
+    return 'error';
+  }
+  if (normalized === 'finish' || normalized === 'done') {
+    return 'final';
+  }
 
   if (
     normalized === 'thinking' ||
@@ -749,14 +916,21 @@ function createAgentPlanPayload(input: {
   history?: ChatHistoryItem[];
   message: string;
 }): Record<string, unknown> {
-  const requestNote = compactText(
-    [input.message.trim(), formatChatHistoryForPlan(input.history ?? [])]
-      .filter(Boolean)
-      .join('\n\n'),
-    1800
-  );
+  if (typeof input.message !== 'string' || !input.message.trim()) {
+    throw new Error('请输入聊天内容。');
+  }
+  const requestNote = input.message.trim();
+  if (requestNote.length > MAX_CHAT_MESSAGE_LENGTH) {
+    throw new Error(`聊天输入最多 ${MAX_CHAT_MESSAGE_LENGTH} 字，请缩短后发送。`);
+  }
+  const chatHistory = (input.history ?? [])
+    .filter((item) => item.kind !== 'tool' && item.kind !== 'thought')
+    .slice(-14)
+    .map((item) => ({ role: item.role, text: item.text.trim().slice(0, 2000) }))
+    .filter((item) => item.text);
 
   return {
+    chatHistory,
     currentState: {
       soreness: [],
     },
@@ -788,39 +962,13 @@ function createAgentPlanPayload(input: {
   };
 }
 
-function formatChatHistoryForPlan(history: ChatHistoryItem[]): string {
-  const lines = history
-    .slice(-6)
-    .map((item) => {
-      const speaker = item.role === 'user' ? '用户' : '助手';
-      const body = compactText(item.text, 220);
-      return body ? `${speaker}: ${body}` : null;
-    })
-    .filter((item): item is string => Boolean(item));
-
-  if (lines.length === 0) {
-    return '';
-  }
-
-  return `最近对话上下文：\n${lines.join('\n')}`;
-}
-
-function compactText(value: string, maxLength: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
-}
-
 function looksLikePlanRecord(value: Record<string, unknown>): boolean {
   return Array.isArray(value.weeklySchedule) || Array.isArray(value.progressionRules);
 }
 
 function extractFallbackText(payload: Record<string, unknown>): string | null {
   return extractFirstText([
+    payload.answer,
     payload.text,
     payload.summary,
     payload.message,
@@ -885,14 +1033,6 @@ function normalizeApiPath(value: string | undefined): string | null {
   return trimmed ? (trimmed.startsWith('/') ? trimmed : `/${trimmed}`) : null;
 }
 
-function getApiBaseUrl(): string {
-  if (!API_BASE_URL) {
-    throw new Error('缺少 EXPO_PUBLIC_API_BASE_URL，暂时无法连接 agent 服务。');
-  }
-
-  return API_BASE_URL;
-}
-
 async function parseResponseBody(response: Response): Promise<unknown> {
   const text = await response.text();
 
@@ -923,4 +1063,14 @@ function extractMessage(payload: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function createAbortError(): Error {
+  const error = new Error('已取消生成。');
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw createAbortError();
 }

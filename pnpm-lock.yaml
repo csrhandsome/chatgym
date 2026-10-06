@@ -4,6 +4,14 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  react-native-gifted-chat@3.3.2:
+    hash: 19370fbf08ac1e345280a1aeed26099671ef5d9e3fe9c233aefaa88944001d31
+    path: patches/react-native-gifted-chat@3.3.2.patch
+  react-native-zoom-reanimated@1.5.3:
+    hash: 37d8ea5d574a0bfd5501062507501145c0e7a6619484de6fcf03b689a546b29b
+    path: patches/react-native-zoom-reanimated@1.5.3.patch
+
 importers:
 
   .:
@@ -79,7 +87,7 @@ importers:
         version: 2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       react-native-gifted-chat:
         specifier: ^3.3.2
-        version: 3.3.2(fe3fa55e5941a5f21e189ed94ed91e8f)
+        version: 3.3.2(patch_hash=19370fbf08ac1e345280a1aeed26099671ef5d9e3fe9c233aefaa88944001d31)(fe3fa55e5941a5f21e189ed94ed91e8f)
       react-native-markdown-display:
         specifier: ^7.0.2
         version: 7.0.2(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
@@ -11077,7 +11085,7 @@ snapshots:
       react: 19.1.0
       react-native: 0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0)
 
-  react-native-gifted-chat@3.3.2(fe3fa55e5941a5f21e189ed94ed91e8f):
+  react-native-gifted-chat@3.3.2(patch_hash=19370fbf08ac1e345280a1aeed26099671ef5d9e3fe9c233aefaa88944001d31)(fe3fa55e5941a5f21e189ed94ed91e8f):
     dependencies:
       '@expo/react-native-action-sheet': 4.1.1(@types/react@19.1.17)(react@19.1.0)
       '@types/lodash.isequal': 4.5.8
@@ -11089,7 +11097,7 @@ snapshots:
       react-native-keyboard-controller: 1.21.2(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       react-native-reanimated: 4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       react-native-safe-area-context: 5.6.2(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
-      react-native-zoom-reanimated: 1.5.3(react-native-gesture-handler@2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))
+      react-native-zoom-reanimated: 1.5.3(patch_hash=37d8ea5d574a0bfd5501062507501145c0e7a6619484de6fcf03b689a546b29b)(react-native-gesture-handler@2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))
     transitivePeerDependencies:
       - '@types/react'
 
@@ -11169,7 +11177,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  react-native-zoom-reanimated@1.5.3(react-native-gesture-handler@2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)):
+  react-native-zoom-reanimated@1.5.3(patch_hash=37d8ea5d574a0bfd5501062507501145c0e7a6619484de6fcf03b689a546b29b)(react-native-gesture-handler@2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native-reanimated@4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)):
     dependencies:
       react-native-gesture-handler: 2.28.0(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)
       react-native-reanimated: 4.1.7(react-native-worklets@0.5.1(@babel/core@7.29.0)(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.0)(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)

@@ -2,11 +2,11 @@ import Markdown from 'react-native-markdown-display';
 import { Image, StyleSheet, Text, type ImageSourcePropType, View } from 'react-native';
 
 import { sketchTheme } from '@/constants/theme';
-import type { ChatMessageKind } from '@/services/backend-api';
+import type { ChatMessageKind, ChatResponseChunk } from '@/services/agent-api';
 
 export type ChatCardKind = ChatMessageKind | 'user';
 
-export type ChatMessageCardData = {
+export type ChatMessageCardData = Pick<ChatResponseChunk, 'eventId' | 'status' | 'toolCallId'> & {
   createdAt: Date | number;
   kind: ChatCardKind;
   text: string;
@@ -63,6 +63,15 @@ const CARD_META: Record<
 export function ChatMessageCard({ message }: ChatMessageCardProps) {
   const meta = CARD_META[message.kind];
   const isUser = message.kind === 'user';
+  const eyebrow = message.kind === 'tool'
+    ? message.status === 'completed'
+      ? '已完成'
+      : message.status === 'failed'
+        ? '执行失败'
+        : meta.eyebrow
+    : message.kind === 'answer' && message.status === 'failed'
+      ? '回复未完成'
+      : meta.eyebrow;
 
   return (
     <View style={[styles.wrap, isUser ? styles.wrapRight : styles.wrapLeft]}>
@@ -98,7 +107,7 @@ export function ChatMessageCard({ message }: ChatMessageCardProps) {
                   color: meta.eyebrowColor,
                 },
               ]}>
-              {meta.eyebrow}
+              {eyebrow}
             </Text>
           </View>
           <Text

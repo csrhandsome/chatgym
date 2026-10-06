@@ -1,0 +1,13 @@
+diff --git a/src/index.tsx b/src/index.tsx
+index b59a1fd7fb9514b08b8a40c28280e9b020258904..885bcf26349a03c8a9f721ffe1766e3341b4e30c 100644
+--- a/src/index.tsx
++++ b/src/index.tsx
+@@ -127,7 +127,7 @@ export interface UseZoomGestureProps {
+  */
+ export interface UseZoomGestureReturn {
+   zoomGesture: ComposedGesture
+-  contentContainerAnimatedStyle: ReturnType<typeof useAnimatedStyle>
++  contentContainerAnimatedStyle: ReturnType<typeof useAnimatedStyle<ViewStyle>>
+   onLayout: (event: LayoutChangeEvent) => void
+   onLayoutContent: (event: LayoutChangeEvent) => void
+   zoomOut: () => void
