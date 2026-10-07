@@ -9,9 +9,11 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
+      "bundleIdentifier": "com.chatgym.app",
       "supportsTablet": true
     },
     "android": {
+      "package": "com.chatgym.app",
       "adaptiveIcon": {
         "backgroundColor": "#EFE4D6",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -26,6 +28,8 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./build/ios/config-plugin",
+      "./build/android/config-plugin",
       "expo-router",
       [
         "expo-camera",
