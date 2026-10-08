@@ -16,8 +16,8 @@ const plan = {
   title: '测试训练计划',
   summary: '每周三次训练',
   weeklySchedule: [{
-    dayIndex: 1,
-    dayLabel: '周一',
+    dayIndex: new Date().getDay() || 7,
+    dayLabel: `周${'日一二三四五六'[new Date().getDay()]}`,
     mainBlocks: [{
       title: '力量训练',
       exercises: [{ name: '杠铃深蹲', sets: 3, reps: 10 }],

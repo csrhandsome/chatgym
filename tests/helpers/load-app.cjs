@@ -23,6 +23,12 @@ function loadApp(overrides = {}, env = {}) {
     'react-native': native,
     'react-native-safe-area-context': native,
     'expo-constants': { expoConfig: null, platform: null, expoGoConfig: null },
+    'expo-wechat': { default: {
+      registerApp: async () => true,
+      isWXAppInstalled: async () => true,
+      addListener: () => ({ remove() {} }),
+      pay: async () => true,
+    } },
     '@react-native-async-storage/async-storage': {
       getItem: async (key) => storage.get(key) ?? null,
       setItem: async (key, value) => { storage.set(key, value); },
@@ -33,7 +39,7 @@ function loadApp(overrides = {}, env = {}) {
     },
     ...overrides,
   };
-  const appProcess = { env: { ...env } };
+  const appProcess = { env: { NODE_ENV: 'development', ...env } };
   function load(relativePath) {
     const filename = path.resolve(root, relativePath);
     if (cache.has(filename)) return cache.get(filename).exports;
@@ -63,8 +69,8 @@ function loadApp(overrides = {}, env = {}) {
       },
       fileName: filename,
     }).outputText;
-    new Function('require', 'module', 'exports', 'process', code)(
-      appRequire, module, module.exports, appProcess
+    new Function('require', 'module', 'exports', 'process', '__DEV__', code)(
+      appRequire, module, module.exports, appProcess, appProcess.env.NODE_ENV !== 'production'
     );
     return module.exports;
   }

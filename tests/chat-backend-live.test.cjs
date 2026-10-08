@@ -18,18 +18,21 @@ const api = (delivery) => loadApp({}, {
   EXPO_PUBLIC_PLAN_API_PATH: `/api/agent/plan${delivery === 'stream' ? '/stream' : ''}`,
 }).load('services/agent-api.ts');
 for (const delivery of ['json', 'stream']) {
-  test(`chat actual backend: ${delivery} dialog answer reaches frontend chunks`, { skip: !base }, async () => {
+  test(`chat actual backend: ${delivery} follow-up generates today's plan`, { skip: !base }, async () => {
     const result = await api(delivery).sendAgentMessage(account.token, { message: '卧推动作怎么做？' });
     assert.equal(result.delivery, delivery);
-    assert.ok(result.chunks.some((c) => c.kind === 'answer' && c.text.includes('保持肩胛稳定')));
+    assert.ok(result.chunks.some((c) => c.fitnessPlan && c.text.includes('保持肩胛稳定')));
   });
-  test(`chat actual backend: ${delivery} tool loop and reviewed plan normalize for Fitness`, { skip: !base }, async () => {
+  test(`chat actual backend: ${delivery} today's chest plan has three exercises and correct date`, { skip: !base }, async () => {
     const received = [];
     const result = await api(delivery).sendAgentMessage(account.token, {
-      message: '请生成每周三次的训练计划', history: [{ role: 'user', text: '我想增肌' }, { role: 'assistant', text: '每周训练几次？' }],
+      message: '今天练胸', history: [{ role: 'user', text: '我想增肌' }, { role: 'assistant', text: '今天是周三，每周训练三次。' }],
     }, { onChunk: (c) => received.push(c) });
     const saved = result.chunks.find((c) => c.fitnessPlan);
-    assert.ok(saved?.fitnessPlan.exercises.some((e) => e.name === '卧推'));
+    assert.deepEqual(saved?.fitnessPlan.exercises.map((e) => e.name), ['卧推', '蝴蝶飞鸟', '龙门架夹胸']);
+    const context = loadApp().load('services/planning-context.ts').createPlanningContext('今天练胸');
+    assert.ok(saved.fitnessPlan.title.includes(context.calendar.localDate));
+    assert.ok(saved.fitnessPlan.title.includes(context.schedule.preferredDays[0]));
     assert.ok(result.chunks.some((c) => c.kind === 'tool' && c.status === 'completed' && c.toolCallId));
     assert.ok(result.chunks.some((c) => c.kind === 'thought'));
     if (delivery === 'stream') assert.ok(received.some((c) => c.fitnessPlan));

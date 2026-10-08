@@ -20,9 +20,16 @@ const server = Bun.serve({
     await before;
     try {
       if (note.includes('取消')) await new Promise((resolve) => setTimeout(resolve, 3500));
+      const dailyPlan = validPlan(1);
+      const session = dailyPlan.weeklySchedule[0];
+      session.dayIndex = input.calendar.dayIndex;
+      session.dayLabel = `周${'一二三四五六日'[session.dayIndex - 1]}`;
+      dailyPlan.title = `${input.calendar.localDate} ${session.dayLabel}胸部训练`;
+      dailyPlan.summary = '保持肩胛稳定，控制下放。';
+      const exercise = session.mainBlocks[0].exercises[0];
+      session.mainBlocks[0].exercises = ['卧推', '蝴蝶飞鸟', '龙门架夹胸'].map((name) => ({ ...exercise, name, sets: 3 }));
       const replies = note.includes('失败') ? [{ httpError: 400, message: 'chat audit provider failure' }]
-        : note.includes('计划') ? [recommendToolReply, JSON.stringify(validPlan(3)), JSON.stringify(validPlan(3))]
-        : ['保持肩胛稳定，控制下放。'];
+        : [recommendToolReply, JSON.stringify(dailyPlan)];
       const { value, calls } = await withModelReplies(replies, async () => {
         const response = await app.handle(request);
         // Wait until the real SSE workflow finishes before restoring provider

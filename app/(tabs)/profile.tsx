@@ -10,11 +10,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { PaymentPanel } from '@/components/payment/payment-panel';
 import { sketchTheme } from '@/constants/theme';
 import { useAuth } from '@/hooks/use-auth';
 
 export default function ProfileScreen() {
-  const { isAuthenticated, isHydrating, sessionError, signIn, signOut, signUp } = useAuth();
+  const { isAuthenticated, isHydrating, sessionError, signIn, signOut, signUp, token, userId } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -115,6 +116,8 @@ export default function ProfileScreen() {
           <Text style={styles.metaText}>生成的训练建议会自动同步到训练页。</Text>
           {sessionError ? <Text style={styles.feedbackText}>{sessionError}</Text> : null}
         </View>
+
+        <PaymentPanel key={`${userId ?? 'anonymous'}:${token ?? 'anonymous'}`} />
 
         <View style={[styles.card, styles.formCard]}>
           <Text style={styles.sectionTitle}>{isAuthenticated ? '当前状态' : '账号登录'}</Text>

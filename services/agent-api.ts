@@ -1,6 +1,7 @@
 import { createApiConnectionError, getApiBaseUrl } from '@/services/api-config';
 import { BackendApiError } from '@/services/backend-api';
 import { extractFitnessPlan, type FitnessPlan } from '@/services/fitness-plan';
+import { createPlanningContext, getDailyPlanError } from '@/services/planning-context';
 const PLAN_API_PATH = normalizeApiPath(process.env.EXPO_PUBLIC_PLAN_API_PATH) ?? '/api/agent/plan/stream';
 const VLM_API_PATH =
   normalizeApiPath(process.env.EXPO_PUBLIC_VLM_API_PATH) ?? '/api/agent/vlm/analyze';
@@ -105,7 +106,8 @@ export async function sendAgentMessage(
   const streamedChunkKeys = new Set<string>();
   let eventNumber = 0;
 
-  const result = await requestAgentPayload(PLAN_API_PATH, createAgentPlanPayload(input), {
+  const { payload, context } = createAgentPlanPayload(input);
+  const result = await requestAgentPayload(PLAN_API_PATH, payload, {
     onEvent(event) {
       if (!options.onChunk) {
         return;
@@ -153,6 +155,12 @@ export async function sendAgentMessage(
     throw new Error(invalidPlan
       ? 'Agent 返回的训练计划没有有效动作，未同步到 Fitness 页，请重试。'
       : '训练计划未通过审核，未同步到 Fitness 页，请重新生成。');
+  }
+
+  const dailyPlanError = getDailyPlanError(completedPayload?.plan, context);
+  if (dailyPlanError) {
+    if (result.delivery === 'json') for (const chunk of chunks) options.onChunk?.(chunk);
+    throw new Error(`${dailyPlanError} 未同步到 Fitness 页。`);
   }
 
   if (chunks.length === 0) {
@@ -915,7 +923,7 @@ function mergeFinalPayload(finalPayload: unknown, events: AgentConsoleEvent[]): 
 function createAgentPlanPayload(input: {
   history?: ChatHistoryItem[];
   message: string;
-}): Record<string, unknown> {
+}): { payload: Record<string, unknown>; context: ReturnType<typeof createPlanningContext> } {
   if (typeof input.message !== 'string' || !input.message.trim()) {
     throw new Error('请输入聊天内容。');
   }
@@ -928,30 +936,33 @@ function createAgentPlanPayload(input: {
     .slice(-14)
     .map((item) => ({ role: item.role, text: item.text.trim().slice(0, 2000) }))
     .filter((item) => item.text);
+  const context = createPlanningContext(requestNote, new Date(), chatHistory.filter((item) => item.role === 'user').map((item) => item.text));
 
-  return {
+  return { context, payload: {
     chatHistory,
+    interactionMode: context.interactionMode,
+    planningScope: context.planningScope,
+    calendar: context.calendar,
     currentState: {
       soreness: [],
+      notes: context.notes,
     },
     goal: {
       primary: 'general_fitness',
       requestNote,
       secondary: [],
-      targetAreas: [],
+      targetAreas: context.targetAreas,
     },
     preferences: {
       avoidExercises: [],
       equipment: [],
       preferredExercises: [],
+      preferredSplit: context.singleSession && context.targetAreas.length
+        ? `${context.targetAreas.join('、')}专项` : undefined,
       workoutLocation: 'gym',
     },
     rememberedWorkouts: [],
-    schedule: {
-      availableDaysPerWeek: 3,
-      preferredDays: [],
-      sessionDurationMinutes: 60,
-    },
+    schedule: context.schedule,
     user: {
       id: 'chatgym-user',
       injuries: [],
@@ -959,7 +970,7 @@ function createAgentPlanPayload(input: {
       name: 'ChatGym User',
       trainingExperience: 'intermediate',
     },
-  };
+  } };
 }
 
 function looksLikePlanRecord(value: Record<string, unknown>): boolean {

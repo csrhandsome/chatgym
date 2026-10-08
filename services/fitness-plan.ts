@@ -434,6 +434,7 @@ function normalizeExercise(source: ExerciseSource, index: number): FitnessPlanEx
       record.description,
       record.summary,
       record.instructions,
+      record.coachingCue,
       record.notes,
       record.tips,
       record.target,

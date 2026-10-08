@@ -229,6 +229,52 @@ test('acceptance: error card has an explicit failed label', async (t) => {
   assert.match(cardText(received[0]), /执行失败|调用失败/);
 });
 
+function dailyChestPlan() {
+  const today = new Date();
+  return { ...plan, weeklyFrequency: 1, weeklySchedule: [{
+    dayIndex: today.getDay() || 7, dayLabel: `周${'日一二三四五六'[today.getDay()]}`,
+    mainBlocks: [{ title: '胸部训练', exercises: ['卧推', '蝴蝶飞鸟', '龙门架夹胸'].map((name) => ({
+      name, sets: 3, reps: 10, primaryMuscles: ['胸'],
+    })) }],
+  }] };
+}
+
+for (const delivery of ['json', 'stream']) {
+  const invalidDailyPlans = [
+    ['12 main exercises', /不能超过 5/, (value) => {
+      const block = value.weeklySchedule[0].mainBlocks[0];
+      block.exercises = Array.from({ length: 12 }, (_, index) => ({ ...block.exercises[index % 3] }));
+    }],
+    ['three sessions', /只有一次训练/, (value) => {
+      value.weeklySchedule = Array.from({ length: 3 }, () => structuredClone(value.weeklySchedule[0]));
+      value.weeklyFrequency = 3;
+    }],
+    ['incorrect weekday', /训练日期不一致/, (value) => { value.weeklySchedule[0].dayIndex = value.weeklySchedule[0].dayIndex % 7 + 1; }],
+    ['unrelated leg exercise', /无关的动作/, (value) => {
+      value.weeklySchedule[0].mainBlocks[0].exercises.push({ name: '杠铃深蹲', sets: 3, reps: 10, primaryMuscles: ['腿'] });
+    }],
+  ];
+  for (const [label, error, mutate] of invalidDailyPlans) {
+    test(`daily acceptance: ${delivery} ${label} never overwrites Fitness data`, async (t) => {
+      const invalid = dailyChestPlan(); mutate(invalid);
+      t.mock.method(globalThis, 'fetch', async () => delivery === 'json' ? json({ plan: invalid, review: { status: 'pass' } })
+        : sse([event('final', { output: { plan: invalid, review: { status: 'pass' } } })]));
+      const screen = screenHarness(); screen.storage.set('fitnessPlan:test-user', 'previous-plan');
+      screen.send('今天练胸'); await screen.settle();
+      assert.equal(screen.storage.get('fitnessPlan:test-user'), 'previous-plan');
+      assert.match(screen.states[2], error);
+    });
+  }
+  test(`daily acceptance: ${delivery} today chest session is saved with three exercises`, async (t) => {
+    const valid = dailyChestPlan();
+    t.mock.method(globalThis, 'fetch', async () => delivery === 'json' ? json({ plan: valid })
+      : sse([event('final', { output: { plan: valid } })]));
+    const screen = screenHarness(); screen.send('今天练胸'); await screen.settle();
+    const saved = JSON.parse(screen.storage.get('fitnessPlan:test-user'));
+    assert.deepEqual(saved.exercises.map((exercise) => exercise.name), ['卧推', '蝴蝶飞鸟', '龙门架夹胸']);
+  });
+}
+
 // Exercise ChatScreen's real send handler using a minimal hook and list adapter.
 // These are orchestration tests, not native rendering or GiftedChat integration tests.
 function screenHarness(auth = {}, overrides = {}) {
@@ -632,7 +678,7 @@ test('chat regression: JSON execution error cannot save a plan and preserves pro
 });
 
 test('chat regression: latest final plan replaces an earlier same-summary draft', async (t) => {
-  const finalPlan = { ...plan, weeklySchedule: [{ mainBlocks: [{ exercises: [{ name: '卧推', sets: 4, reps: 8 }] }] }] };
+  const finalPlan = { ...plan, weeklySchedule: [{ ...plan.weeklySchedule[0], mainBlocks: [{ exercises: [{ name: '卧推', sets: 4, reps: 8 }] }] }] };
   t.mock.method(globalThis, 'fetch', async () => json({ agentEvents: [
     event('tool_result', { toolCallId: 'draft', output: plan }),
     event('final', { output: { plan } }),

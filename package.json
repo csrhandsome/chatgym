@@ -19,6 +19,7 @@
     "check": "pnpm lint && pnpm typecheck && pnpm test:frontend && pnpm test:login",
     "test:agent": "node tests/agent-display.test.cjs",
     "test:frontend": "node scripts/test-frontend.cjs",
+    "test:payment": "node --test --test-isolation=none tests/payment-*.test.cjs",
     "test:login": "node tests/login-live.test.cjs"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "expo-symbols": "~1.0.8",
     "expo-system-ui": "~6.0.9",
     "expo-web-browser": "~15.0.10",
+    "expo-wechat": "0.4.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
