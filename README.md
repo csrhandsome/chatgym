@@ -1,8 +1,10 @@
 # ChatGym
 
+构建脚本、平台配置和说明统一放在 [`build/`](build/README.md)，分别按 [`ios/`](build/ios/README.md)、[`android/`](build/android/README.md) 管理。根目录执行 `pnpm ios:build`、`pnpm ios:build:device` 或 `pnpm android:build`，产物和日志保存在对应平台的 `output/` 下。
+
 当前页面逐项验收、最终计数和验证边界见 [当前页面功能验收](docs/current-page-feature-audit.md)。[功能测试报告](docs/frontend-functional-test-report.md) 和 [架构与工具调用展示审计](docs/architecture-and-agent-audit.md) 保留历史结果。后端使用自托管 Mem0 OSS 与 Qdrant，启动配置和旧记忆迁移见 [后端 Mem0 说明](../chatgym_server/docs/mem0.md)。
 
-默认开发配置：先按后端说明配置服务，在 `../chatgym_server` 执行 `bun run dev`（默认 API 端口 3000），再在本目录执行 `pnpm web`。前端未设置 `EXPO_PUBLIC_API_BASE_URL` 时也使用 3000：Web/iOS 本机回退为 `127.0.0.1`，Android 模拟器回退为 `10.0.2.2`，Expo 提供开发机地址时使用该地址。真机可将 `.env.example` 复制为 `.env`，把 API 地址改为开发机局域网 IP；自定义后端 `PORT` 时同时更新该 API 地址，并重启 Expo。Expo 页面端口与 API 端口独立。
+使用当前服务器配置时，直接在本目录执行 `pnpm ios` 或 `pnpm web`。iOS 配置包含该服务器 IP 的 HTTP 例外。需要本地开发后端时，先按后端说明配置服务，在 `../chatgym_server` 执行 `bun run dev`（默认 API 端口 3000），并更新 `.env` 中的 API 地址。前端未设置 `EXPO_PUBLIC_API_BASE_URL` 时也使用 3000：Web/iOS 本机回退为 `127.0.0.1`，Android 模拟器回退为 `10.0.2.2`，Expo 提供开发机地址时使用该地址。真机访问本地后端时需使用开发机局域网 IP；自定义后端 `PORT` 时同时更新 API 地址，并重启 Expo。Expo 页面端口与 API 端口独立。
 
 ```bash
 pnpm test:frontend
